@@ -1,4 +1,4 @@
-# 🎵 Discord Music Bot v2.1
+# 🎵 Discord Music Bot v2.0.2
 
 A proprietary, high-performance music bot for Discord, built with Node.js and Discord.js v14.
 Designed for stability ("Direct Stream" architecture) and user engagement (Leveling System).
@@ -10,7 +10,8 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
 ### 🎧 Audiophile Playback
 - **Direct Stream Architecture:** Bypasses legacy piping issues for stable, continuous playback.
 - **Format:** High-quality Opus audio (via `yt-dlp` resolution + `ffmpeg`).
-- **Supports:** YouTube (Video, Audio, Playlists), Spotify (Link resolution).
+- **Supports:** YouTube (Video, Audio, Playlists).
+- **Recommendation Engine:** Uses YouTube Data API v3 to suggest relevant tracks ("Mixes") when the queue ends.
 
 ### 🎚️ Advanced Audio Controls
 - **/filter:** Hot-reload audio effects that apply *instantly* without restarting the song.
@@ -52,6 +53,7 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
    ```env
    DISCORD_TOKEN=your_bot_token_here
    CLIENT_ID=your_client_id_here
+   YOUTUBE_API_KEY=your_youtube_v3_api_key_here
    ```
 
 ### Setup via Docker

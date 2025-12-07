@@ -1,6 +1,6 @@
 {
   "name": "microtech_radiobot",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Discord bot service for n8n orchestration",
   "main": "index.js",
   "scripts": {
@@ -16,6 +16,7 @@
     "ffmpeg-static": "^5.2.0",
     "libsodium-wrappers": "^0.7.15",
     "opusscript": "^0.0.8",
+    "soundcloud-scraper": "^5.0.3",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "tweetnacl": "^1.0.3",

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder, ComponentType } = require('discord.js');
 const { getSession } = require('../../utils/playerManager');
 const { resolveSpotifyTrack } = require('../../utils/spotifyResolver');
 const { ytDlpWrap } = require('../../utils/playerManager');
@@ -46,7 +46,7 @@ module.exports = {
                 return interaction.editReply('❌ Falha ao processar link do Spotify.');
             }
         } else if (!url.startsWith('http')) {
-            // Simple search
+            // Text query: Default to ytsearch
             searchUrl = `ytsearch1:${url}`;
         }
 
