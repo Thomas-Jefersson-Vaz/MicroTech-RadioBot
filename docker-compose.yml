@@ -1,0 +1,10 @@
+services:
+  music-bot:
+    image: tjvg4m34r13/microtech_radiobot:latest
+    build: .
+    container_name: music-bot
+    restart: always
+    volumes:
+      - ./database.sqlite:/app/database.sqlite
+    env_file:
+      - .env

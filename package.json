@@ -1,0 +1,27 @@
+{
+  "name": "n8n-discord-music-bot",
+  "version": "2.0.0",
+  "description": "Discord bot service for n8n orchestration",
+  "main": "index.js",
+  "scripts": {
+    "start": "nodemon index.js"
+  },
+  "dependencies": {
+    "@discordjs/voice": "^0.19.0",
+    "@snazzah/davey": "^0.1.8",
+    "axios": "^1.7.9",
+    "cheerio": "^1.1.2",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "ffmpeg-static": "^5.2.0",
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.0.8",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "tweetnacl": "^1.0.3",
+    "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
