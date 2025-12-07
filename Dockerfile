@@ -7,6 +7,7 @@ FROM node:20-alpine
 RUN apk add --no-cache ffmpeg python3 build-base
 
 WORKDIR /app
+RUN mkdir -p /app/data
 
 COPY package*.json ./
 

@@ -9,7 +9,7 @@ services:
     environment:
       - DB_PATH=/app/data/database.sqlite
     env_file:
-      - .env
+      - stack.env
 
 volumes:
   bot-data:

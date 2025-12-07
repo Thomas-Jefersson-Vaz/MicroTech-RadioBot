@@ -11,7 +11,8 @@ const { PassThrough } = require('stream');
 const path = require('path');
 const fs = require('fs');
 const YTDlpWrap = require('yt-dlp-wrap').default;
-const ffmpeg = require('ffmpeg-static');
+const ffmpegStatic = require('ffmpeg-static');
+const ffmpeg = process.platform === 'linux' ? 'ffmpeg' : ffmpegStatic;
 const { spawn } = require('child_process');
 const { addToHistory } = require('./db');
 

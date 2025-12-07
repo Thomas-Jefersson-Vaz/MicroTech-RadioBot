@@ -54,7 +54,7 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
    CLIENT_ID=your_client_id_here
    ```
 
-### Setup via Docker Hub
+### Setup via Docker
 **Image:** `tjvg4m34r13/microtech_radiobot`
 **Repository:** [Docker Hub Link](https://hub.docker.com/repository/docker/tjvg4m34r13/microtech_radiobot/general)
 
@@ -66,6 +66,11 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
 
 2. **Database:**
    The bot automatically creates a `database.sqlite` file on first run.
+
+### Setup via Portainer (Stacks)
+1. Use the `portainer-docker-compose.yaml` content for the stack definition.
+2. Upload your environment variables as a file named `stack.env` (or rename the reference in the compose file to match your stack's env file name).
+
 
 ## 🎮 Commands
 

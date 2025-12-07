@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+Dockerfile
+docker-compose.yml
+portainer-docker-compose.yaml
+database.sqlite
+.gitignore
+*.md
+yt-dlp.exe
