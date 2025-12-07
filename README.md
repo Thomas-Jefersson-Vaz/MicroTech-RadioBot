@@ -11,7 +11,10 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
 - **Direct Stream Architecture:** Bypasses legacy piping issues for stable, continuous playback.
 - **Format:** High-quality Opus audio (via `yt-dlp` resolution + `ffmpeg`).
 - **Supports:** YouTube (Video, Audio, Playlists).
-- **Recommendation Engine:** Uses YouTube Data API v3 to suggest relevant tracks ("Mixes") when the queue ends.
+- **Recommendation Engine (v2.0.2):**
+  - **Smart Search:** Analyzes "Artist - Title" to find relevant tracks by the same artist using YouTube Data API v3.
+  - **Interactive:** Presents a **Dropdown/Button Menu** with the Top 5 unique results.
+  - **Anti-Duplicate:** Filters out covers or re-uploads of the same song you just heard.
 
 ### 🎚️ Advanced Audio Controls
 - **/filter:** Hot-reload audio effects that apply *instantly* without restarting the song.
