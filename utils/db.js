@@ -7,13 +7,12 @@ let dbPromise;
 
 async function getDb() {
     if (!dbPromise) {
-        dbPromise = open({
-            filename: dbPath,
-            driver: sqlite3.Database
-        });
-    }
-    const db = await dbPromise;
-    await db.exec(`
+        dbPromise = (async () => {
+            const db = await open({
+                filename: dbPath,
+                driver: sqlite3.Database
+            });
+            await db.exec(`
     CREATE TABLE IF NOT EXISTS guild_users (
       guild_id TEXT,
       user_id TEXT,
@@ -34,8 +33,11 @@ async function getDb() {
       played_at INTEGER
     );
   `);
-    console.log("[Database] Initialized and schema verified.");
-    return db;
+            console.log("[Database] Initialized and schema verified.");
+            return db;
+        })();
+    }
+    return dbPromise;
 }
 
 // --- User/XP Methods ---
