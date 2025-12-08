@@ -6,6 +6,9 @@ services:
     restart: always
     volumes:
       - bot-data:/app/data
+    ports:
+      - "3000:3000"
+      - "3001:3001"
     environment:
       - DB_PATH=/app/data/database.sqlite
     env_file:

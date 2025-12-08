@@ -50,6 +50,38 @@ class YouTubeClient {
             return null;
         }
     }
+
+    /**
+     * Search for videos.
+     * @param {string} query 
+     * @returns {Promise<Array>}
+     */
+    async search(query) {
+        if (!this.apiKey) return [];
+        try {
+            const res = await axios.get(`${this.baseUrl}/search`, {
+                params: {
+                    part: 'snippet',
+                    q: query,
+                    type: 'video',
+                    maxResults: 5,
+                    key: this.apiKey
+                }
+            });
+            if (res.data.items) {
+                return res.data.items.map(item => ({
+                    title: item.snippet.title,
+                    url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+                    thumbnail: item.snippet.thumbnails.default.url,
+                    channel: item.snippet.channelTitle
+                }));
+            }
+            return [];
+        } catch (e) {
+            console.error("[YouTube] Search failed:", e.message);
+            return [];
+        }
+    }
 }
 
 module.exports = new YouTubeClient();

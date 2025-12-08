@@ -62,21 +62,25 @@ module.exports = {
                 for (const entry of info.entries) {
                     songsToAdd.push({
                         title: entry.title,
-                        url: entry.webpage_url || `https://www.youtube.com/watch?v=${entry.id}`, // FIX: Use original URL, not resolved direct stream
+                        url: entry.webpage_url || `https://www.youtube.com/watch?v=${entry.id}`,
                         duration: entry.duration,
-                        requestedBy: member.id
+                        thumbnail: entry.thumbnail || (entry.thumbnails && entry.thumbnails.length > 0 ? entry.thumbnails[entry.thumbnails.length - 1].url : null),
+                        requestedBy: member.user.username,
+                        artist: entry.uploader || "Unknown"
                     });
                 }
                 await interaction.editReply(`✅ Adicionadas **${songsToAdd.length}** músicas da playlist **${info.title}** à fila.`);
             } else {
-                // Single Video (or Search Result)
                 const entry = info.entries ? info.entries[0] : info;
+                console.log("[DEBUG] Entry Data:", JSON.stringify(entry, null, 2)); // Debug Thumbnail
 
                 songsToAdd.push({
                     title: entry.title,
-                    url: entry.webpage_url || `https://www.youtube.com/watch?v=${entry.id}`, // FIX: Use original URL, not resolved direct stream
+                    url: entry.webpage_url || `https://www.youtube.com/watch?v=${entry.id}`,
                     duration: entry.duration,
-                    requestedBy: member.id
+                    thumbnail: entry.thumbnail || (entry.thumbnails && entry.thumbnails.length > 0 ? entry.thumbnails[entry.thumbnails.length - 1].url : null),
+                    requestedBy: member.user.username,
+                    artist: entry.uploader || "Unknown"
                 });
 
                 if (session.currentSong) {

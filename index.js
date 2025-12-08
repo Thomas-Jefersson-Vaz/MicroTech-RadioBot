@@ -13,6 +13,8 @@ const client = new Client({
     partials: [Partials.Channel] // Useful for DMs if needed, but mainly for safety
 });
 
+const { initApi } = require('./dashboard-api');
+
 client.commands = new Collection();
 
 // --- Load Commands ---
@@ -50,4 +52,21 @@ for (const file of eventFiles) {
     }
 }
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).then(() => {
+    initApi(client);
+});
+
+// --- Protocolo de Segurança: Anti-Crash ---
+process.on('unhandledRejection', (reason, promise) => {
+    console.error(' [ANTI-CRASH] Unhandled Rejection:', reason);
+    // Do not exit
+});
+
+process.on('uncaughtException', (err) => {
+    console.error(' [ANTI-CRASH] Uncaught Exception:', err);
+    // Do not exit
+});
+
+client.on('error', (error) => {
+    console.error(' [DISCORD-CLIENT] Error:', error);
+});

@@ -56,6 +56,7 @@ class PlayerSession {
         this.volume = 100;
         this.filters = [];
         this.playbackStartTime = 0;
+        this.startOffset = 0; // Offset in seconds (for seek/resume correct calculation)
         this.notificationsChannel = null;
         this.timerInterval = null;
 
@@ -91,6 +92,7 @@ class PlayerSession {
 
     async playSong(song, channel, seekTime = 0) {
         this.currentSong = song;
+        this.startOffset = seekTime;
         const startSetup = Date.now();
         // Only add to history if starting from beginning (not seeking/reloading)
         if (seekTime === 0) {
@@ -114,6 +116,21 @@ class PlayerSession {
             if (song.duration === 0 && info.duration) {
                 song.duration = info.duration;
                 console.log(`[Player] Updated duration: ${song.duration}s`);
+            }
+
+            // Extract Thumbnail
+            if (info.thumbnail) {
+                song.thumbnail = info.thumbnail;
+            } else if (info.thumbnails && info.thumbnails.length > 0) {
+                // Get the last one (usually highest quality)
+                song.thumbnail = info.thumbnails[info.thumbnails.length - 1].url;
+            }
+
+            if (song.thumbnail) {
+                console.log(`[Player] Updated thumbnail: ${song.thumbnail}`);
+            } else {
+                console.log(`[Player] WARNING: No thumbnail found. Available keys: ${Object.keys(info).join(', ')}`);
+                if (info.thumbnails) console.log(`[Player] Thumbnails array length: ${info.thumbnails.length}`);
             }
 
             // Find best audio format URL
@@ -188,11 +205,6 @@ class PlayerSession {
 
             const ffmpegProcess = spawn(ffmpeg, ffmpegArgs, {
                 stdio: ['ignore', 'pipe', 'pipe']
-            });
-
-            // Logging - VERBOSE MODE
-            if (ffmpegProcess.stderr) ffmpegProcess.stderr.on('data', d => {
-                // console.log(`[ffmpeg] ${d.toString().trim()}`);
             });
 
             ffmpegProcess.on('close', (code, signal) => {
@@ -379,6 +391,7 @@ class PlayerSession {
                             title: selectedTrack.title,
                             url: selectedTrack.url,
                             duration: 0,
+                            thumbnail: selectedTrack.thumbnail || null,
                             requestedBy: 'BOT_RECOMMENDATION'
                         };
                         this.queue.push(recSong);
@@ -409,7 +422,7 @@ class PlayerSession {
 
             // RECOMMENDATION LOGIC
             if (this.currentSong && this.connection) {
-                console.log(`[DEBUG] Song finished naturally: ${this.currentSong.title}`);
+
 
                 const added = await this.addRecommendation(this.currentSong);
                 if (added) {
@@ -452,7 +465,36 @@ function getSession(guildId) {
     return sessions.get(guildId);
 }
 
+async function resolveSongMetadata(url) {
+    try {
+        console.log(`[Metadata] Resolving: ${url}`);
+        const metadataJson = await ytDlpWrap.execPromise([
+            url,
+            '--dump-single-json',
+            '--no-playlist'
+        ]);
+        const info = JSON.parse(metadataJson);
+
+        // Thumbnail logic
+        let thumbnail = info.thumbnail || null;
+        if (!thumbnail && info.thumbnails && info.thumbnails.length > 0) {
+            thumbnail = info.thumbnails[info.thumbnails.length - 1].url;
+        }
+
+        return {
+            title: info.title || 'Unknown Title',
+            duration: info.duration || 0,
+            thumbnail: thumbnail,
+            url: info.original_url || info.webpage_url || url
+        };
+    } catch (error) {
+        console.error("[Metadata] Failed to resolve:", error);
+        return null;
+    }
+}
+
 module.exports = {
     getSession,
+    resolveSongMetadata,
     ytDlpWrap
 };

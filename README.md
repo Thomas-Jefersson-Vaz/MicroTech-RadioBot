@@ -1,4 +1,4 @@
-# 🎵 Discord Music Bot v2.0.2
+# 🎵 Discord Music Bot v2.0.3
 
 A proprietary, high-performance music bot for Discord, built with Node.js and Discord.js v14.
 Designed for stability ("Direct Stream" architecture) and user engagement (Leveling System).
@@ -35,6 +35,15 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
 - **Auto-Disconnect:**
   - Leaves automatically 5s after the queue finishes.
   - Leaves *immediately* if the voice channel becomes empty (only bot left).
+
+
+### 📊 Web Dashboard: (Port 3000)
+   - **Session Manager:** View active bot sessions across servers.
+   - **Live Player:** Real-time progress, volume, and "Now Playing" status.
+   - **Queue Management:** Drag & Drop reordering, Add/Remove songs via UI.
+   - **Login System:** Secure Admin login (persisted via LocalStorage).
+   - **Polling:** Implemented robust polling interval to ensure dashboard stays in sync without manual refreshes.
+
 
 ## 🚀 Installation
 
@@ -93,9 +102,8 @@ Designed for stability ("Direct Stream" architecture) and user engagement (Level
 | `/version` | Show bot version info. |
 
 ## 🔮 Future Roadmap
-
-- **🌐 Web Dashboard:** A web interface to monitor active sessions, manage queues, and view leaderboards in real-time.
 - **📩 DM Reports:** Feature to request a personal activity summary (XP, Playtime) across all servers directly via Bot DM.
+- **🪪 Profile Card System:** Custom profile cards showing user level, stats, roles, and status (Command: `/perfil @user`).
 
 ---
 *Created by [`TJVG4M34R13`](https://github.com/Thomas-Jefersson-Vaz)*
