@@ -25,13 +25,35 @@ class LavalinkManager {
                 const node = this.shoukaku.nodes.get(name);
                 if (node && node.state !== 1 && node.state !== 'CONNECTED') {
                     console.log(`[Lavalink] Node ${name} is not connected (state: ${node.state}). Force-connecting...`);
-                    node.connect();
+                    try {
+                        node.connect();
+                    } catch (err) {
+                        console.error(`[Lavalink] Connection retry failed: ${err.message}`);
+                    }
                 } else {
                     console.log(`[Lavalink] Node ${name} connection status: already connected or connecting.`);
                 }
             }, 5000);
         });
         this.shoukaku.on('reconnecting', (name, attempts, interval) => console.log(`[Lavalink] Reconnecting to Node ${name}... Attempts: ${attempts}`));
+
+        // Periodic health check every 10 seconds to ensure the bot recovers if Shoukaku gives up or misses events on startup
+        this.healthCheckTimer = setInterval(() => {
+            for (const nodeConfig of config.lavalink.nodes) {
+                const node = this.shoukaku.nodes.get(nodeConfig.name);
+                if (node) {
+                    // Check if node is not connected (1 / 'CONNECTED') and not currently connecting (0 / 'CONNECTING')
+                    if (node.state !== 1 && node.state !== 'CONNECTED' && node.state !== 0 && node.state !== 'CONNECTING') {
+                        console.log(`[Lavalink] Health check: Node ${nodeConfig.name} is not connected (state: ${node.state}). Force-connecting...`);
+                        try {
+                            node.connect();
+                        } catch (err) {
+                            console.error(`[Lavalink] Health check connection to ${nodeConfig.name} failed:`, err.message);
+                        }
+                    }
+                }
+            }
+        }, 10000);
     }
 }
 
