@@ -16,10 +16,10 @@ timeout /t 10 /nobreak >nul
 echo.
 echo [3/5] Checking for yt-dlp...
 where yt-dlp >nul 2>nul
-if %ERRORLEVEL% neq 0 (
+if errorlevel 1 (
     echo yt-dlp not found. Installing via pip...
     pip install yt-dlp
-    if %ERRORLEVEL% neq 0 (
+    if errorlevel 1 (
         echo [WARNING] Failed to install yt-dlp. Playlist loading may be limited.
     ) else (
         echo yt-dlp installed successfully.
