@@ -4,6 +4,7 @@ import { config } from '../config/env.js';
 class LavalinkManager {
     constructor(client) {
         this.client = client;
+        console.log('[Lavalink] Connecting to nodes:', JSON.stringify(config.lavalink.nodes.map(n => ({ name: n.name, url: n.url, auth: n.auth ? '***' : null }))));
         this.shoukaku = new Shoukaku(new Connectors.DiscordJS(client), config.lavalink.nodes);
 
         this.shoukaku.on('error', (_, error) => console.error('Lavalink Error:', error));
