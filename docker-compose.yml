@@ -1,0 +1,102 @@
+services:
+  backend:
+    build: ./backend
+    container_name: mikrotech_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_URL: redis://redis:6379
+      LAVALINK_URL: lavalink:2333
+      CALLBACK_URL: ${CALLBACK_URL}
+      API_PORT: 3000
+    ports:
+      - "${API_PORT}:3000"
+    depends_on:
+      - postgres
+      - redis
+      - lavalink
+    networks:
+      - mikrotech_net
+
+  frontend:
+    build: ./frontend
+    container_name: mikrotech_frontend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT}
+      BACKEND_INTERNAL_URL: http://backend:3000
+    ports:
+      - "${FRONTEND_PORT}:3001"
+    depends_on:
+      - backend
+    networks:
+      - mikrotech_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mikrotech_postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-mikrotech_v3}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - mikrotech_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: mikrotech_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mikrotech_net
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: mikrotech_lavalink
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVER_PORT: 2333
+      SERVER_ADDRESS: 0.0.0.0
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
+      SPRING_CONFIG_LOCATION: file:/opt/lavalink/application.yml
+      SPRING_CLOUD_CONFIG_ENABLED: "false"
+    volumes:
+      - ./infrastructure/lavalink/application.yml:/opt/lavalink/application.yml
+    ports:
+      - "${LAVALINK_PORT:-2333}:2333"
+    networks:
+      - mikrotech_net
+    depends_on:
+      - redis
+
+networks:
+  mikrotech_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
