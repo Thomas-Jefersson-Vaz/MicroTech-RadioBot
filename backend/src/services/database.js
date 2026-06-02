@@ -21,7 +21,7 @@ class DatabaseService {
         this.initializeDatabase();
     }
 
-    async initializeDatabase() {
+    async initializeDatabase(retries = 8, delay = 5000) {
         const schema = `
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id VARCHAR(32) PRIMARY KEY,
@@ -76,13 +76,22 @@ class DatabaseService {
             CREATE INDEX IF NOT EXISTS idx_guild_users_xp ON guild_users(guild_id, xp DESC);
         `;
 
-        try {
-            await this.pool.query('SELECT NOW()');
-            console.log('[Database] Connected to PostgreSQL');
-            await this.pool.query(schema);
-            console.log('[Database] Schema initialized successfully');
-        } catch (err) {
-            console.error('[Database] Connection failed or schema initialization failed:', err.message);
+        for (let i = 0; i < retries; i++) {
+            try {
+                await this.pool.query('SELECT NOW()');
+                console.log('[Database] Connected to PostgreSQL');
+                await this.pool.query(schema);
+                console.log('[Database] Schema initialized successfully');
+                return; // Success, exit the retry loop
+            } catch (err) {
+                console.warn(`[Database] Connection attempt ${i + 1} failed: ${err.message}`);
+                if (i < retries - 1) {
+                    console.log(`[Database] Retrying in ${delay / 1000} seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                } else {
+                    console.error('[Database] All connection attempts failed. Database schema not initialized.');
+                }
+            }
         }
     }
 
