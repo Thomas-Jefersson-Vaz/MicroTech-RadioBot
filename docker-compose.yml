@@ -14,9 +14,12 @@ services:
     ports:
       - "${API_PORT}:3000"
     depends_on:
-      - postgres
-      - redis
-      - lavalink
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      lavalink:
+        condition: service_healthy
     networks:
       - mikrotech_net
 
@@ -118,6 +121,12 @@ services:
       - mikrotech_net
     depends_on:
       - redis
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header='Authorization: ${LAVALINK_SERVER_PASSWORD:-youshallnotpass}' -qO- http://localhost:2333/v4/info > /dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
 
 networks:
   mikrotech_net:
