@@ -106,7 +106,7 @@ services:
       LAVALINK_SERVER_SOUNDCLOUD_SEARCH_ENABLED: "true"
       LAVALINK_SERVER_GC_WARNINGS: "false"
       # YouTube Plugin configuration
-      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.1"
+      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.2"
       LAVALINK_PLUGINS_0_REPOSITORY: "https://maven.lavalink.dev/releases"
       # Plugin YouTube settings
       PLUGINS_YOUTUBE_ENABLED: "true"
