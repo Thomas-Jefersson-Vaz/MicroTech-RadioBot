@@ -122,11 +122,11 @@ services:
     depends_on:
       - redis
     healthcheck:
-      test: ["CMD-SHELL", "wget --header='Authorization: ${LAVALINK_SERVER_PASSWORD:-youshallnotpass}' -qO- http://localhost:2333/v4/info > /dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/2333' 2>/dev/null || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 10s
+      start_period: 30s
 
 networks:
   mikrotech_net:
