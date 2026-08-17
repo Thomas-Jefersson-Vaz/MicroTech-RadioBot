@@ -1,19 +1,30 @@
-import LavalinkManager from './lavalink.js';
 import QueueService from './queue.js';
 import DatabaseService from './database.js';
 import YtdlpService from './ytdlp.js';
 import { EventEmitter } from 'events';
+import createLogger from '../utils/logger.js';
+
+const log = createLogger('Player');
+
+/**
+ * Maximum consecutive track failures before playNext() gives up.
+ * Prevents infinite loops when an entire queue is unresolvable.
+ */
+const MAX_SKIP_RETRIES = 5;
+
+/**
+ * Timeout for JIT track resolution via Lavalink REST (ms).
+ * Prevents a single hung resolve from blocking the entire player.
+ */
+const JIT_RESOLVE_TIMEOUT = 15000;
 
 class PlayerController extends EventEmitter {
     constructor(client, lavalink) {
         super();
         this.client = client;
-        this.lavalink = lavalink; // This is the wrapper, we need the shoukaku instance
-
-        // Listen to Shoukaku events via the wrapper if possible, or access instance directly
+        this.lavalink = lavalink;
         this.shoukaku = lavalink.shoukaku;
 
-        this.shoukaku.on('error', (_, error) => console.error('Shoukaku Error:', error));
         this.currentTracks = new Map();
         this.playerStates = new Map(); // { position, timestamp, paused, duration }
     }
@@ -46,15 +57,25 @@ class PlayerController extends EventEmitter {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    /** Strip & return trailing flags (-s, -r, --shuffle …) from a raw query string */
+    /**
+     * Strip & return trailing flags (-s, -r, --shuffle …) from a raw query string.
+     * Fixed to properly handle multiple flags (e.g. "-s -r").
+     */
     _parseFlags(raw) {
         const flags = { shuffle: false, reverse: false };
-        // Collect all trailing -x / --xxx tokens
-        const cleaned = raw.replace(/(\s+-{1,2}(\w+))+\s*$/g, (_, _full, token) => {
-            if (token === 's' || token === 'shuffle') flags.shuffle = true;
-            if (token === 'r' || token === 'reverse') flags.reverse = true;
+
+        // Match all trailing flag tokens individually
+        const cleaned = raw.replace(/(\s+-{1,2}\w+)+\s*$/, (match) => {
+            // Split the matched portion into individual flags
+            const tokens = match.trim().split(/\s+/);
+            for (const token of tokens) {
+                const flag = token.replace(/^-{1,2}/, '');
+                if (flag === 's' || flag === 'shuffle') flags.shuffle = true;
+                if (flag === 'r' || flag === 'reverse') flags.reverse = true;
+            }
             return '';
         }).trim();
+
         return { cleaned, flags };
     }
 
@@ -84,15 +105,27 @@ class PlayerController extends EventEmitter {
     async _resolve(node, rawQuery, source) {
         const isUrl = /^https?:\/\//.test(rawQuery.trim());
         const search = this._buildSearch(rawQuery, source);
-        console.log(`[Player] Resolving: ${search}`);
+        log.debug(`Resolving: ${search}`);
         let result = await node.rest.resolve(search);
 
         // Fallback to YouTube Music search when text search returns nothing
         if (!isUrl && (!result || result.loadType === 'empty' || result.loadType === 'error')) {
-            console.log(`[Player] ytsearch empty — retrying with ytmsearch: ${rawQuery.trim()}`);
+            log.debug(`ytsearch empty — retrying with ytmsearch: ${rawQuery.trim()}`);
             result = await node.rest.resolve(`ytmsearch:${rawQuery.trim()}`);
         }
         return result;
+    }
+
+    /**
+     * Resolve a track URL with a timeout to prevent hanging.
+     * Returns null on timeout instead of blocking forever.
+     */
+    async _resolveWithTimeout(node, url, timeoutMs = JIT_RESOLVE_TIMEOUT) {
+        const resolvePromise = node.rest.resolve(url);
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`JIT resolution timed out after ${timeoutMs}ms`)), timeoutMs)
+        );
+        return Promise.race([resolvePromise, timeoutPromise]);
     }
 
     /** Extract tracks array from a Lavalink result object */
@@ -143,7 +176,7 @@ class PlayerController extends EventEmitter {
                     }));
                     allTracks.push(...enriched);
                 } catch (err) {
-                    console.warn(`[Player] yt-dlp failed for ${part}, falling back to Lavalink:`, err.message);
+                    log.warn(`yt-dlp failed for ${part}, falling back to Lavalink:`, err.message);
                     // Fallback to Lavalink if yt-dlp fails
                     const result = await this._resolve(node, part, source);
                     if (result?.loadType === 'playlist') playlistNames.push(result.data.info.name);
@@ -195,7 +228,7 @@ class PlayerController extends EventEmitter {
                     shardId: 0
                 });
             } catch (err) {
-                console.error(`[Player:${guildId}] joinVoiceChannel failed:`, err);
+                log.error(`[${guildId}] joinVoiceChannel failed:`, err.message);
                 throw new Error('Could not connect to your voice channel. Make sure I have permission and you are in the server\'s voice channel.');
             }
 
@@ -214,7 +247,7 @@ class PlayerController extends EventEmitter {
 
     setupPlayerEvents(player, guildId, textChannelId) {
         player.on('start', (data) => {
-            console.log(`[Player:${guildId}] Track Started`);
+            log.info(`[${guildId}] Track started: ${this.currentTracks.get(guildId)?.info?.title || 'Unknown'}`);
             this.emit('trackStart', { guildId, textChannelId, track: data.track });
 
             // Reset player state for new track
@@ -239,21 +272,67 @@ class PlayerController extends EventEmitter {
         });
 
         player.on('end', async (data) => {
-            console.log(`[Player:${guildId}] Track Ended: ${data.reason}`);
+            log.info(`[${guildId}] Track ended: reason=${data.reason}`);
             if (data.reason === 'replaced') return;
-            if (data.reason === 'loadFailed') console.warn('Track load failed');
-            // Play next
+
+            if (data.reason === 'loadFailed') {
+                log.warn(`[${guildId}] Track load failed — skipping to next`);
+            }
+
+            // Play next track
             await this.playNext(guildId);
         });
 
-        player.on('exception', (err) => {
-            console.error(`[Player:${guildId}] Exception:`, err);
+        player.on('stuck', (data) => {
+            log.warn(`[${guildId}] Track STUCK (threshold: ${data.thresholdMs}ms) — skipping to next`);
+            // Force-stop the stuck track and move to the next one
+            try {
+                player.stopTrack();
+            } catch (err) {
+                log.error(`[${guildId}] Error stopping stuck track:`, err.message);
+            }
+            // playNext will be triggered by the 'end' event from stopTrack
         });
 
-        player.on('closed', () => {
-            console.log(`[Player:${guildId}] Connection Closed`);
-            QueueService.clear(guildId);
-            this.playerStates.delete(guildId);
+        player.on('exception', (data) => {
+            log.error(`[${guildId}] Player exception:`, data.message || data.exception || data);
+        });
+
+        player.on('closed', (data) => {
+            const code = data?.code ?? data;
+            const reason = data?.reason ?? '';
+            log.warn(`[${guildId}] WebSocket closed — code=${code} reason="${reason}"`);
+
+            // Only clear queue on intentional disconnects
+            // 4014 = disconnected by Discord (kicked/moved)
+            // 1000 = normal closure (we called stop/leave)
+            if (code === 4014 || code === 1000) {
+                log.info(`[${guildId}] Intentional disconnect (code=${code}), clearing queue`);
+                QueueService.clear(guildId);
+                this.currentTracks.delete(guildId);
+                this.playerStates.delete(guildId);
+            } else {
+                // Transient failure — keep queue intact for potential resume
+                log.info(`[${guildId}] Transient disconnect (code=${code}), keeping queue for resume`);
+                // Update state to reflect disconnected status
+                const existing = this.playerStates.get(guildId);
+                if (existing) {
+                    existing.paused = true;
+                    existing.timestamp = Date.now();
+                    this.playerStates.set(guildId, existing);
+                }
+            }
+        });
+
+        player.on('resumed', () => {
+            log.info(`[${guildId}] Player RESUMED after reconnect`);
+            // Re-sync paused state from the actual player
+            const existing = this.playerStates.get(guildId);
+            if (existing) {
+                existing.paused = player.paused;
+                existing.timestamp = Date.now();
+                this.playerStates.set(guildId, existing);
+            }
         });
 
         player.on('update', (update) => {
@@ -269,65 +348,82 @@ class PlayerController extends EventEmitter {
         });
     }
 
+    /**
+     * Play the next track in the queue.
+     * Uses an iterative approach with a skip counter to prevent stack overflow
+     * when multiple consecutive tracks fail to resolve.
+     */
     async playNext(guildId) {
         const player = this.shoukaku.players.get(guildId);
         if (!player) return;
 
-        const nextTrack = await QueueService.next(guildId);
-        if (!nextTrack) {
-            console.log(`[Player:${guildId}] Queue empty, stopping.`);
-            this.currentTracks.delete(guildId);
-            this.playerStates.delete(guildId);
-            player.stopTrack();
-            // Disconnect after timeout?
-            // setTimeout(() => this.shoukaku.leaveVoiceChannel(guildId), 30000);
-            return;
-        }
+        let consecutiveFailures = 0;
 
-        // ── Just-in-time resolution for yt-dlp stubs ──
-        // Tracks from yt-dlp have no `encoded` field — resolve via Lavalink now
-        let trackToPlay = nextTrack;
+        while (consecutiveFailures < MAX_SKIP_RETRIES) {
+            const nextTrack = await QueueService.next(guildId);
 
-        if (!nextTrack.encoded) {
-            const trackUrl = nextTrack.url || nextTrack.info?.uri;
-            if (!trackUrl) {
-                console.error(`[Player:${guildId}] Track has no encoded string and no URL:`, nextTrack);
-                return this.playNext(guildId);
+            if (!nextTrack) {
+                log.info(`[${guildId}] Queue empty, stopping player`);
+                this.currentTracks.delete(guildId);
+                this.playerStates.delete(guildId);
+                player.stopTrack();
+                return;
             }
 
-            console.log(`[Player:${guildId}] JIT resolving: ${nextTrack.info?.title || trackUrl}`);
-            const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
-            if (!node) {
-                console.error(`[Player:${guildId}] No Lavalink node available for JIT resolution`);
-                return this.playNext(guildId);
+            // ── Just-in-time resolution for yt-dlp stubs ──
+            let trackToPlay = nextTrack;
+
+            if (!nextTrack.encoded) {
+                const trackUrl = nextTrack.url || nextTrack.info?.uri;
+                if (!trackUrl) {
+                    log.error(`[${guildId}] Track has no encoded string and no URL — skipping`);
+                    consecutiveFailures++;
+                    continue;
+                }
+
+                log.debug(`[${guildId}] JIT resolving: ${nextTrack.info?.title || trackUrl}`);
+                const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
+                if (!node) {
+                    log.error(`[${guildId}] No Lavalink node available for JIT resolution — stopping`);
+                    return; // No node = can't play anything, don't loop
+                }
+
+                try {
+                    const result = await this._resolveWithTimeout(node, trackUrl);
+                    const resolved = this._extractTracks(result);
+                    if (resolved.length === 0) {
+                        log.warn(`[${guildId}] JIT resolution returned no tracks for: ${trackUrl}`);
+                        consecutiveFailures++;
+                        continue;
+                    }
+                    // Merge resolved Lavalink data with our metadata (keep requester, etc.)
+                    trackToPlay = { ...resolved[0], requester: nextTrack.requester };
+                } catch (err) {
+                    log.warn(`[${guildId}] JIT resolution failed for "${nextTrack.info?.title || trackUrl}": ${err.message}`);
+                    consecutiveFailures++;
+                    continue;
+                }
             }
+
+            // ── Play the track ──
+            this.currentTracks.set(guildId, trackToPlay);
+            log.info(`[${guildId}] Playing: ${trackToPlay.info?.title || 'Unknown'}`);
 
             try {
-                const result = await node.rest.resolve(trackUrl);
-                const resolved = this._extractTracks(result);
-                if (resolved.length === 0) {
-                    console.warn(`[Player:${guildId}] JIT resolution returned no tracks for: ${trackUrl}`);
-                    return this.playNext(guildId); // skip unresolvable tracks
-                }
-                // Merge resolved Lavalink data with our metadata (keep requester, etc.)
-                trackToPlay = { ...resolved[0], requester: nextTrack.requester };
-            } catch (err) {
-                console.warn(`[Player:${guildId}] JIT resolution failed for ${trackUrl}: ${err.message}`);
-                return this.playNext(guildId); // skip failed tracks
+                await player.playTrack({ track: { encoded: trackToPlay.encoded } });
+                return; // Success — exit the loop
+            } catch (error) {
+                log.error(`[${guildId}] Failed to play track "${trackToPlay.info?.title}":`, error.message);
+                consecutiveFailures++;
+                continue;
             }
         }
 
-        this.currentTracks.set(guildId, trackToPlay);
-
-        console.log(`[Player:${guildId}] Playing next track:`, trackToPlay.info ? trackToPlay.info.title : 'Unknown');
-
-        try {
-            await player.playTrack({ track: { encoded: trackToPlay.encoded } });
-        } catch (error) {
-            console.error(`[Player:${guildId}] Failed to play track:`, error);
-            // Try next one
-            this.playNext(guildId);
-        }
+        // Exhausted retries
+        log.error(`[${guildId}] Max consecutive skip failures (${MAX_SKIP_RETRIES}) reached — stopping player`);
+        this.currentTracks.delete(guildId);
+        this.playerStates.delete(guildId);
+        player.stopTrack();
     }
 
     async skip(guildId) {
@@ -341,6 +437,8 @@ class PlayerController extends EventEmitter {
         const player = this.shoukaku.players.get(guildId);
         if (!player) return false;
         await QueueService.clear(guildId);
+        this.currentTracks.delete(guildId);
+        this.playerStates.delete(guildId);
         await player.stopTrack();
         this.shoukaku.leaveVoiceChannel(guildId);
         return true;

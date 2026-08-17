@@ -1,11 +1,16 @@
 import { createClient } from 'redis';
 import { config } from '../config/env.js';
+import createLogger from '../utils/logger.js';
+
+const log = createLogger('Queue');
 
 class QueueService {
     constructor() {
         this.client = createClient({ url: config.redis.url });
-        this.client.on('error', err => console.error('Redis Client Error', err));
-        this.client.connect().then(() => console.log('Connected to Redis for Queue Management'));
+        this.client.on('error', err => log.error('Redis client error:', err.message));
+        this.client.connect()
+            .then(() => log.info('Connected to Redis for Queue Management'))
+            .catch(err => log.error('Failed to connect to Redis:', err.message));
     }
 
     async add(guildId, tracks) {
@@ -53,6 +58,19 @@ class QueueService {
         multi.del(key);
         multi.rPush(key, items);
         await multi.exec();
+    }
+
+    /**
+     * Gracefully disconnect from Redis.
+     * Called during application shutdown.
+     */
+    async disconnect() {
+        try {
+            await this.client.quit();
+            log.info('Redis connection closed gracefully');
+        } catch (err) {
+            log.warn('Error closing Redis connection:', err.message);
+        }
     }
 }
 

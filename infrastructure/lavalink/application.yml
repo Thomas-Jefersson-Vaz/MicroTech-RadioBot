@@ -13,14 +13,13 @@ plugins:
       - TVHTML5Embedded
       - ANDROID_MUSIC
       - ANDROID_VR
-    # - ANDROID_TESTSUITE
+      - ANDROID_TESTSUITE
 lavalink:
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.17.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
       repository: "https://maven.lavalink.dev/releases"
   server:
     password: "youshallnotpass"
-    # nas: enabled: true (Default)
     sources:
       youtube: false # Disabling built-in youtube to use the plugin
       bandcamp: true
@@ -42,34 +41,24 @@ lavalink:
       lowPass: true
     bufferDurationMs: 4000 # 4s buffer for stability at higher quality
     frameBufferDurationMs: 8000 # Increased output buffer headroom
-    opusEncodingQuality: 5 # Mid-range quality — balanced CPU vs audio fidelity
+    opusEncodingQuality: 8 # High quality — stability issues fixed via stuck event handling
     resamplingQuality: MEDIUM # Better resampling without excessive CPU
-    trackStuckThresholdMs: 10000 # Reset to default
-    useSeekGhosting: true # Reset to default
+    trackStuckThresholdMs: 10000 # 10s before Lavalink fires TrackStuckEvent
+    useSeekGhosting: true
     youtubePlaylistLoadLimit: 15 # Number of pages to load (~100 tracks/page)
     playerUpdateInterval: 2 # Faster updates for dashboard progress tracking
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: false
-    # ratelimit:
-      # ipBlocks: ["1.0.0.0/8", "..."] # list of ip blocks
-      # excludedIps: ["...", "..."] # ips which should be explicit excluded from usage by lavalink
-      # strategy: "RotateOnBan" # RotateOnBan | LoadBalance | NanoSwitch | RotatingNanoSwitch
-      # searchTriggersFail: true # Whether a search 429 should trigger marking the ip as failing
-      # retryLimit: -1 # -1 = use default lavalink retry limits
-      # checkToken: "..." # api token for a valid header check.
 
 metrics:
   prometheus:
-    enabled: false
+    enabled: true
     endpoint: /metrics
 
 sentry:
   dsn: ""
   environment: ""
-#  tags:
-#    some_key: some_value
-#    another_key: another_value
 
 logging:
   file:
@@ -84,5 +73,3 @@ logging:
     includeQueryString: true
     includePayload: true
     maxPayloadLength: 10000
-
-

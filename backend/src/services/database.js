@@ -1,6 +1,8 @@
 import pg from 'pg';
 import { config } from '../config/env.js';
+import createLogger from '../utils/logger.js';
 
+const log = createLogger('Database');
 const { Pool } = pg;
 
 class DatabaseService {
@@ -14,7 +16,7 @@ class DatabaseService {
         });
 
         this.pool.on('error', (err) => {
-            console.error('[Database] Unexpected error on idle client:', err);
+            log.error('Unexpected error on idle client:', err.message);
         });
 
         // Test connection and initialize schema
@@ -79,17 +81,17 @@ class DatabaseService {
         for (let i = 0; i < retries; i++) {
             try {
                 await this.pool.query('SELECT NOW()');
-                console.log('[Database] Connected to PostgreSQL');
+                log.info('Connected to PostgreSQL');
                 await this.pool.query(schema);
-                console.log('[Database] Schema initialized successfully');
+                log.info('Schema initialized successfully');
                 return; // Success, exit the retry loop
             } catch (err) {
-                console.warn(`[Database] Connection attempt ${i + 1} failed: ${err.message}`);
+                log.warn(`Connection attempt ${i + 1} failed: ${err.message}`);
                 if (i < retries - 1) {
-                    console.log(`[Database] Retrying in ${delay / 1000} seconds...`);
+                    log.info(`Retrying in ${delay / 1000} seconds...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                 } else {
-                    console.error('[Database] All connection attempts failed. Database schema not initialized.');
+                    log.error('All connection attempts failed. Database schema not initialized.');
                 }
             }
         }
@@ -109,7 +111,7 @@ class DatabaseService {
         try {
             await this.pool.query(query, [guildId, title, url, requestedBy]);
         } catch (err) {
-            console.error('[Database] Failed to record history:', err.message);
+            log.error('Failed to record history:', err.message);
         }
     }
 
@@ -128,7 +130,7 @@ class DatabaseService {
             const result = await this.pool.query(query, [guildId, limit]);
             return result.rows;
         } catch (err) {
-            console.error('[Database] Failed to get history:', err.message);
+            log.error('Failed to get history:', err.message);
             return [];
         }
     }
@@ -144,7 +146,7 @@ class DatabaseService {
             const result = await this.pool.query(query, [guildId]);
             return result.rows[0] || null;
         } catch (err) {
-            console.error('[Database] Failed to get guild settings:', err.message);
+            log.error('Failed to get guild settings:', err.message);
             return null;
         }
     }
@@ -163,7 +165,20 @@ class DatabaseService {
         try {
             await this.pool.query(query, [guildId, settings.volume ?? 100]);
         } catch (err) {
-            console.error('[Database] Failed to upsert guild settings:', err.message);
+            log.error('Failed to upsert guild settings:', err.message);
+        }
+    }
+
+    /**
+     * Gracefully close the PostgreSQL connection pool.
+     * Called during application shutdown.
+     */
+    async shutdown() {
+        try {
+            await this.pool.end();
+            log.info('PostgreSQL connection pool closed gracefully');
+        } catch (err) {
+            log.warn('Error closing PostgreSQL pool:', err.message);
         }
     }
 }

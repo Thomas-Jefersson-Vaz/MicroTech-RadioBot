@@ -81,7 +81,7 @@ services:
       SERVER_PORT: 2333
       SERVER_ADDRESS: 0.0.0.0
       LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
-      _JAVA_OPTIONS: "-Xmx384M -Xms64M"
+      _JAVA_OPTIONS: "-Xmx512M -Xms64M"
       # Disabling built-in sources
       LAVALINK_SERVER_SOURCES_YOUTUBE: "false"
       LAVALINK_SERVER_SOURCES_BANDCAMP: "true"
