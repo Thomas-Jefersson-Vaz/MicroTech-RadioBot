@@ -20,7 +20,7 @@ services:
       redis:
         condition: service_healthy
       nodelink:
-        condition: service_healthy
+        condition: service_started
     networks:
       - mikrotech_net
 
@@ -89,12 +89,6 @@ services:
       - "${NODELINK_PORT:-2333}:2333"
     networks:
       - mikrotech_net
-    healthcheck:
-      test: [ "CMD-SHELL", "wget -qO- http://localhost:2333/version || exit 1" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
 networks:
   mikrotech_net:
