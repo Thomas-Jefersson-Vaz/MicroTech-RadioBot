@@ -8,7 +8,8 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       REDIS_URL: redis://redis:6379
-      LAVALINK_URL: lavalink:2333
+      LAVALINK_URL: nodelink:2333
+      LAVALINK_PASSWORD: ${NODELINK_PASSWORD:-youshallnotpass}
       CALLBACK_URL: ${CALLBACK_URL}
       API_PORT: 3000
     ports:
@@ -18,7 +19,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      lavalink:
+      nodelink:
         condition: service_healthy
     networks:
       - mikrotech_net
@@ -39,10 +40,14 @@ services:
       - mikrotech_net
 
   postgres:
-    image: postgres:15-alpine
-    container_name: mikrotech_db
+    image: postgres:16-alpine
+    container_name: mikrotech_postgres
     restart: unless-stopped
     env_file: stack.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-mikrotech_v3}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -50,7 +55,7 @@ services:
     networks:
       - mikrotech_net
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U admin -d mikrotech_v3" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d postgres" ]
       interval: 10s
       timeout: 5s
       retries: 5
