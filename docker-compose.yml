@@ -76,65 +76,24 @@ services:
       retries: 5
 
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
-    container_name: mikrotech_lavalink
+    image: ghcr.io/performanc/nodelink:latest
+    container_name: mikrotech_nodelink
     restart: unless-stopped
     env_file: stack.env
     environment:
-      SERVER_PORT: 2333
-      SERVER_ADDRESS: 0.0.0.0
-      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
-      _JAVA_OPTIONS: "-Xmx2G -Xms512M"
-      # Disabling built-in sources
-      LAVALINK_SERVER_SOURCES_YOUTUBE: "false"
-      LAVALINK_SERVER_SOURCES_BANDCAMP: "true"
-      LAVALINK_SERVER_SOURCES_SOUNDCLOUD: "true"
-      LAVALINK_SERVER_SOURCES_TWITCH: "true"
-      LAVALINK_SERVER_SOURCES_VIMEO: "true"
-      LAVALINK_SERVER_SOURCES_HTTP: "true"
-      LAVALINK_SERVER_SOURCES_LOCAL: "false"
-      # Audio engine tuning is in application.yml — do NOT duplicate buffer/quality settings here
-      LAVALINK_SERVER_RESAMPLING_QUALITY: MEDIUM
-      LAVALINK_SERVER_TRACK_STUCK_THRESHOLD_MS: 10000
-      LAVALINK_SERVER_USE_SEEK_GHOSTING: "true"
-      LAVALINK_SERVER_YOUTUBE_PLAYLIST_LOAD_LIMIT: 15
-      LAVALINK_SERVER_PLAYER_UPDATE_INTERVAL: 2
-      LAVALINK_SERVER_YOUTUBE_SEARCH_ENABLED: "true"
-      LAVALINK_SERVER_SOUNDCLOUD_SEARCH_ENABLED: "true"
-      LAVALINK_SERVER_GC_WARNINGS: "false"
-      # YouTube Plugin configuration
-      LAVALINK_PLUGINS_0_DEPENDENCY: "dev.lavalink.youtube:youtube-plugin:1.18.2"
-      LAVALINK_PLUGINS_0_REPOSITORY: "https://maven.lavalink.dev/releases"
-      # Plugin YouTube settings
-      PLUGINS_YOUTUBE_ENABLED: "true"
-      PLUGINS_YOUTUBE_ALLOWSEARCH: "true"
-      PLUGINS_YOUTUBE_ALLOWDIRECTVIDEOIDS: "true"
-      PLUGINS_YOUTUBE_ALLOWDIRECTPLAYLISTIDS: "true"
-      PLUGINS_YOUTUBE_OAUTH_ENABLED: "true"
-      PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN: "${YOUTUBE_OAUTH_REFRESHTOKEN}"
-      PLUGINS_YOUTUBE_OAUTH_SKIPINITIALIZATION: "false"
-      PLUGINS_YOUTUBE_CLIENTS_0: "TV"
-      PLUGINS_YOUTUBE_CLIENTS_1: "WEB"
-      PLUGINS_YOUTUBE_CLIENTS_2: "ANDROID_MUSIC"
-      PLUGINS_YOUTUBE_CLIENTS_3: "MUSIC"
-      PLUGINS_YOUTUBE_CLIENTS_4: "MWEB"
-      PLUGINS_YOUTUBE_CLIENTS_5: "IOS"
-      PLUGINS_YOUTUBE_CLIENTS_6: "ANDROID_VR"
-    volumes:
-      - ./infrastructure/lavalink/application.yml:/opt/lavalink/application.yml
-      - lavalink_plugins:/opt/lavalink/plugins
+      NODELINK_SERVER_HOST: 0.0.0.0
+      NODELINK_SERVER_PORT: 2333
+      NODELINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
     ports:
       - "${LAVALINK_PORT:-2333}:2333"
     networks:
       - mikrotech_net
-    depends_on:
-      - redis
     healthcheck:
-      test: [ "CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/2333' 2>/dev/null || exit 1" ]
-      interval: 5s
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:2333/version || exit 1" ]
+      interval: 10s
       timeout: 5s
-      retries: 30
-      start_period: 30s
+      retries: 5
+      start_period: 10s
 
 networks:
   mikrotech_net:
