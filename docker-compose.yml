@@ -84,7 +84,7 @@ services:
       SERVER_PORT: 2333
       SERVER_ADDRESS: 0.0.0.0
       LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-youshallnotpass}
-      _JAVA_OPTIONS: "-Xmx1G -Xms256M"
+      _JAVA_OPTIONS: "-Xmx2G -Xms512M"
       # Disabling built-in sources
       LAVALINK_SERVER_SOURCES_YOUTUBE: "false"
       LAVALINK_SERVER_SOURCES_BANDCAMP: "true"
@@ -93,10 +93,7 @@ services:
       LAVALINK_SERVER_SOURCES_VIMEO: "true"
       LAVALINK_SERVER_SOURCES_HTTP: "true"
       LAVALINK_SERVER_SOURCES_LOCAL: "false"
-      # Audio Engine optimization settings
-      LAVALINK_SERVER_BUFFER_DURATION_MS: 1000
-      LAVALINK_SERVER_FRAME_BUFFER_DURATION_MS: 2000
-      LAVALINK_SERVER_OPUS_ENCODING_QUALITY: 5
+      # Audio engine tuning is in application.yml — do NOT duplicate buffer/quality settings here
       LAVALINK_SERVER_RESAMPLING_QUALITY: MEDIUM
       LAVALINK_SERVER_TRACK_STUCK_THRESHOLD_MS: 10000
       LAVALINK_SERVER_USE_SEEK_GHOSTING: "true"

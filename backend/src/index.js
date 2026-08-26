@@ -116,15 +116,21 @@ async function registerCommands() {
 
 client.once('ready', async () => {
     log.info(`Logged in as ${client.user.tag}!`);
-    log.info('Loading commands...');
 
     // Init Lavalink & Player
     lavalinkManager = new LavalinkManager(client);
     playerController = new PlayerController(client, lavalinkManager);
 
-    // Init Commands
-    await CommandHandler.loadCommands();
+    // Init Commands (recursive scan)
+    const loadedNames = await CommandHandler.loadCommands();
+    log.info(`Loaded ${loadedNames.length} command(s) from disk: ${loadedNames.map(n => `/${n}`).join(', ') || '(none)'}`);
+
+    // Register with Discord API
     await registerCommands();
+
+    // Log the commands that are now live on Discord
+    const registeredNames = Array.from(CommandHandler.commands.keys());
+    log.info(`✅ Successfully registered ${registeredNames.length} command(s): ${registeredNames.map(n => `/${n}`).join(', ') || '(none)'}`);
 
     isReady = true;
     log.info('Bot is fully ready. API accepting requests.');
