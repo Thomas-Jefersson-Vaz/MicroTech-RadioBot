@@ -10,6 +10,7 @@ plugins:
     allowDirectVideoIds: true # Whether just video IDs can match. If false, only complete URLs will be loaded.
     allowDirectPlaylistIds: true # Whether just playlist IDs can match. If false, only complete URLs will be loaded.
     clients:
+      - TVHTML5EMBEDDED
       - WEB
       - ANDROID_MUSIC
       - MUSIC

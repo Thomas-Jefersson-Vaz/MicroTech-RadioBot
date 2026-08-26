@@ -65,6 +65,12 @@ class CommandHandler {
             }
         }
 
+        if (loaded.length > 0) {
+            log.info(`Successfully loaded ${loaded.length} command(s): ${loaded.join(', ')}`);
+        } else {
+            log.warn('No commands were successfully loaded.');
+        }
+
         return loaded;
     }
 

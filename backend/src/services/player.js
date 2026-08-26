@@ -370,7 +370,7 @@ class PlayerController extends EventEmitter {
             const duration = this._formatDuration(track?.info?.length);
             const requester = track?.requester?.username || 'System';
 
-            log.info(`[${guildId}] ▶ TRACK START: "${title}" [${duration}] | URI: ${uri} | Requested by: ${requester}`);
+            log.info(`[${guildId}] ▶ TRACK START: "${title}" [${duration}] | URI: ${uri} | TextChannel: ${textChannelId} | Requested by: ${requester}`);
 
             this.emit('trackStart', { guildId, textChannelId, track: data.track });
 
@@ -404,7 +404,7 @@ class PlayerController extends EventEmitter {
             const playedFor = state ? this._formatDuration(state.position + (state.paused ? 0 : Date.now() - state.timestamp)) : '??';
             const duration = this._formatDuration(track?.info?.length);
 
-            log.info(`[${guildId}] ⏹ TRACK END: "${title}" | reason=${data.reason} | played=${playedFor}/${duration}`);
+            log.info(`[${guildId}] ⏹ TRACK END: "${title}" | reason=${data.reason} | TextChannel: ${textChannelId} | played=${playedFor}/${duration}`);
 
             // 'replaced' = another track was loaded directly (not a skip/stop)
             // 'stopped' = explicit stopTrack() call — skip() and stop() handle their own flow
@@ -414,7 +414,7 @@ class PlayerController extends EventEmitter {
             }
 
             if (data.reason === 'loadFailed') {
-                log.warn(`[${guildId}] ⚠ TRACK LOAD FAILED: "${title}" — auto-skipping to next`);
+                log.warn(`[${guildId}] ⚠ TRACK LOAD FAILED: "${title}" | TextChannel: ${textChannelId} — auto-skipping to next`);
             }
 
             // Natural end ('finished') or loadFailed — advance to next track
@@ -426,7 +426,7 @@ class PlayerController extends EventEmitter {
             const title = track?.info?.title || 'Unknown';
             const uri = track?.info?.uri || 'N/A';
 
-            log.warn(`[${guildId}] ⚠ TRACK STUCK: "${title}" (threshold: ${data.thresholdMs}ms) | URI: ${uri}`);
+            log.warn(`[${guildId}] ⚠ TRACK STUCK: "${title}" (threshold: ${data.thresholdMs}ms) | TextChannel: ${textChannelId} | URI: ${uri}`);
 
             // Stop the stuck track and advance directly
             try {
@@ -444,7 +444,7 @@ class PlayerController extends EventEmitter {
             const uri = track?.info?.uri || 'N/A';
             const errMsg = data.message || data.exception || JSON.stringify(data);
 
-            log.error(`[${guildId}] 💥 TRACK EXCEPTION: "${title}" | URI: ${uri} | Error: ${errMsg}`);
+            log.error(`[${guildId}] 💥 TRACK EXCEPTION: "${title}" | TextChannel: ${textChannelId} | URI: ${uri} | Error: ${errMsg}`);
         });
 
         player.on('closed', (data) => {
