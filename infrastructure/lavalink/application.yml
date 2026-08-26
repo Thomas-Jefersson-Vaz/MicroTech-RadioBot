@@ -10,12 +10,16 @@ plugins:
     allowDirectVideoIds: true # Whether just video IDs can match. If false, only complete URLs will be loaded.
     allowDirectPlaylistIds: true # Whether just playlist IDs can match. If false, only complete URLs will be loaded.
     clients:
+      - WEB
       - ANDROID_MUSIC
       - MUSIC
-      - TVHTML5EMBEDDED
-      - WEB
-      - ANDROID_VR
+      - MWEB
       - IOS
+      - ANDROID_VR
+    oauth:
+      enabled: true
+      # refreshToken is provided via PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN env var
+      skipInitialization: false  # Set to true once you have a valid refreshToken
 lavalink:
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"

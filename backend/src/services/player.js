@@ -127,14 +127,48 @@ class PlayerController extends EventEmitter {
 
     /**
      * Resolve a track URL with a timeout to prevent hanging.
-     * Returns null on timeout instead of blocking forever.
+     * Applies URL normalization via _buildSearch and, if the direct URL
+     * returns nothing, falls back to a title-based ytsearch/ytmsearch.
+     *
+     * @param {object} node - Lavalink node
+     * @param {string} url - Track URL to resolve
+     * @param {string|null} fallbackTitle - Track title for search fallback
+     * @param {number} timeoutMs - Timeout in ms
+     * @returns {Promise<object>} Lavalink resolve result
      */
-    async _resolveWithTimeout(node, url, timeoutMs = JIT_RESOLVE_TIMEOUT) {
-        const resolvePromise = node.rest.resolve(url);
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`JIT resolution timed out after ${timeoutMs}ms`)), timeoutMs)
-        );
-        return Promise.race([resolvePromise, timeoutPromise]);
+    async _resolveWithTimeout(node, url, fallbackTitle = null, timeoutMs = JIT_RESOLVE_TIMEOUT) {
+        // Normalise the URL (strip tracking params, convert music.youtube.com, etc.)
+        const normalised = this._buildSearch(url, 'ytsearch');
+        log.debug(`JIT resolve URL: raw="${url}" → normalised="${normalised}"`);
+
+        const withTimeout = (promise) => Promise.race([
+            promise,
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`JIT resolution timed out after ${timeoutMs}ms`)), timeoutMs)
+            ),
+        ]);
+
+        // Attempt 1: direct URL resolve
+        let result = await withTimeout(node.rest.resolve(normalised));
+        log.debug(`JIT resolve attempt 1 (direct): loadType=${result?.loadType}`);
+
+        if (this._extractTracks(result).length > 0) return result;
+
+        // Attempt 2: ytsearch by title (if we have a title)
+        if (fallbackTitle) {
+            log.debug(`JIT direct URL empty — fallback ytsearch: "${fallbackTitle}"`);
+            result = await withTimeout(node.rest.resolve(`ytsearch:${fallbackTitle}`));
+            log.debug(`JIT resolve attempt 2 (ytsearch): loadType=${result?.loadType}`);
+
+            if (this._extractTracks(result).length > 0) return result;
+
+            // Attempt 3: ytmsearch by title
+            log.debug(`JIT ytsearch empty — fallback ytmsearch: "${fallbackTitle}"`);
+            result = await withTimeout(node.rest.resolve(`ytmsearch:${fallbackTitle}`));
+            log.debug(`JIT resolve attempt 3 (ytmsearch): loadType=${result?.loadType}`);
+        }
+
+        return result;
     }
 
     /** Extract tracks array from a Lavalink result object */
@@ -193,9 +227,10 @@ class PlayerController extends EventEmitter {
                 return;
             }
 
-            log.debug(`[${guildId}] Prefetch: resolving "${peeked.info?.title || trackUrl}"...`);
+            const fallbackTitle = peeked.info?.title || null;
+            log.debug(`[${guildId}] Prefetch: resolving "${fallbackTitle || trackUrl}"...`);
             const startMs = Date.now();
-            const result = await this._resolveWithTimeout(node, trackUrl);
+            const result = await this._resolveWithTimeout(node, trackUrl, fallbackTitle);
             const resolved = this._extractTracks(result);
 
             if (resolved.length > 0) {
@@ -536,7 +571,8 @@ class PlayerController extends EventEmitter {
                         continue;
                     }
 
-                    log.debug(`[${guildId}] JIT resolving: "${nextTrack.info?.title || trackUrl}"`);
+                    const fallbackTitle = nextTrack.info?.title || null;
+                    log.info(`[${guildId}] 🔍 JIT resolving: "${fallbackTitle || trackUrl}" | URL: ${trackUrl}`);
                     const resolveStart = Date.now();
                     const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
                     if (!node) {
@@ -545,16 +581,16 @@ class PlayerController extends EventEmitter {
                     }
 
                     try {
-                        const result = await this._resolveWithTimeout(node, trackUrl);
+                        const result = await this._resolveWithTimeout(node, trackUrl, fallbackTitle);
                         const resolved = this._extractTracks(result);
                         if (resolved.length === 0) {
-                            log.warn(`[${guildId}] JIT resolution returned 0 tracks for: "${nextTrack.info?.title || trackUrl}" (${Date.now() - resolveStart}ms)`);
+                            log.warn(`[${guildId}] JIT resolution returned 0 tracks for: "${fallbackTitle || trackUrl}" | URL: ${trackUrl} | loadType: ${result?.loadType} (${Date.now() - resolveStart}ms)`);
                             consecutiveFailures++;
                             continue;
                         }
                         // Merge resolved Lavalink data with our metadata (keep requester, etc.)
                         trackToPlay = { ...resolved[0], requester: nextTrack.requester };
-                        log.debug(`[${guildId}] JIT resolved: "${trackToPlay.info?.title}" in ${Date.now() - resolveStart}ms`);
+                        log.info(`[${guildId}] ✅ JIT resolved: "${trackToPlay.info?.title}" in ${Date.now() - resolveStart}ms`);
                     } catch (err) {
                         log.warn(`[${guildId}] JIT resolution failed for "${nextTrack.info?.title || trackUrl}": ${err.message}`);
                         consecutiveFailures++;

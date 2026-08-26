@@ -1,4 +1,7 @@
 import { execFile } from 'child_process';
+import createLogger from '../utils/logger.js';
+
+const log = createLogger('YtDlp');
 
 /**
  * YtdlpService — Extracts playlist metadata using yt-dlp.
@@ -49,7 +52,7 @@ class YtdlpService {
                 url
             ];
 
-            console.log(`[YtDlp] Extracting playlist: ${url}`);
+            log.info(`Extracting playlist: ${url}`);
             const startTime = Date.now();
 
             // Buffer to accumulate stdout chunks
@@ -64,8 +67,8 @@ class YtdlpService {
                 stderr = stderrResult;
 
                 if (error && !stdout) {
-                    console.error(`[YtDlp] Error: ${error.message}`);
-                    if (stderr) console.error(`[YtDlp] stderr: ${stderr}`);
+                    log.error(`yt-dlp error: ${error.message}`);
+                    if (stderr) log.error(`stderr: ${stderr}`);
                     return reject(new Error(`yt-dlp failed: ${error.message}`));
                 }
 
@@ -83,12 +86,36 @@ class YtdlpService {
                             playlistName = entry.playlist_title;
                         }
 
-                        // Build a YouTube URL from the video ID
-                        const videoUrl = entry.url
-                            ? (entry.url.startsWith('http') ? entry.url : `https://www.youtube.com/watch?v=${entry.url}`)
-                            : (entry.id ? `https://www.youtube.com/watch?v=${entry.id}` : null);
+                        // Build a clean YouTube URL — always use www.youtube.com
+                        // Prefer building from ID to avoid passing music.youtube.com URLs to Lavalink
+                        let videoUrl = null;
+                        const videoId = entry.id || null;
 
-                        if (!videoUrl) continue;
+                        if (videoId && /^[\w-]{11}$/.test(videoId)) {
+                            // Clean 11-char video ID — build a canonical URL
+                            videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                        } else if (entry.url) {
+                            if (entry.url.startsWith('http')) {
+                                // Normalise: music.youtube.com → www.youtube.com, strip tracking params
+                                videoUrl = entry.url
+                                    .replace('music.youtube.com', 'www.youtube.com')
+                                    .replace(/[?&]si=[^&]*/g, '')
+                                    .replace(/\?&/, '?').replace(/&$/, '').replace(/\?$/, '');
+                            } else {
+                                // Bare video ID in the url field
+                                videoUrl = `https://www.youtube.com/watch?v=${entry.url}`;
+                            }
+                        } else if (videoId) {
+                            // Non-standard ID format but it's all we have
+                            videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                        }
+
+                        if (!videoUrl) {
+                            log.debug(`Skipping entry with no usable URL: id=${entry.id}, url=${entry.url}`);
+                            continue;
+                        }
+
+                        log.debug(`Extracted: "${entry.title || '?'}" → ${videoUrl} (raw url=${entry.url}, id=${entry.id})`);
 
                         tracks.push({
                             url: videoUrl,
@@ -103,7 +130,7 @@ class YtdlpService {
                 }
 
                 const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-                console.log(`[YtDlp] Extracted ${tracks.length} tracks from "${playlistName || url}" in ${elapsed}s`);
+                log.info(`Extracted ${tracks.length} tracks from "${playlistName || url}" in ${elapsed}s`);
 
                 resolve({ tracks, playlistName: playlistName || 'Playlist' });
             });
