@@ -84,7 +84,7 @@ class CommandHandler {
         }
 
         try {
-            logHandler.debug(`Executing /${interaction.commandName} by ${interaction.user.tag}`);
+            logHandler.info(`Executing /${interaction.commandName} by ${interaction.user.tag}`);
             await command.execute(interaction, context);
         } catch (error) {
             logHandler.error(`Error in /${interaction.commandName}:`, error);

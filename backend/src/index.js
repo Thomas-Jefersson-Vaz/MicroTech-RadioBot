@@ -137,6 +137,7 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
+    log.info(`[Raw] Received interaction: ${interaction.type} - Command: ${interaction.commandName}`);
     // Pass playerController to context
     await CommandHandler.handleInteraction(interaction, { playerController });
 });
