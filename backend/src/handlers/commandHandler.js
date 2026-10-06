@@ -1,100 +1,47 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import createLogger from '../utils/logger.js';
+import { commands } from '../commands/registry.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const log = createLogger('CommandLoader');
-const logHandler = createLogger('CommandHandler');
+// Compare public definitions, ignoring Discord IDs, version numbers and absent defaults.
+const definition = command => ({ name:command.name,description:command.description,
+    type:command.type || 1,options:(command.options || []).map(option => ({
+        ...definition(option),required:option.required || false,
+        choices:(option.choices || []).map(choice => ({name:choice.name,value:choice.value})),
+        min_value:option.min_value,max_value:option.max_value,min_length:option.min_length,max_length:option.max_length
+    })) });
 
-class CommandHandler {
-    constructor() {
-        this.commands = new Map();
-    }
-
-    /**
-     * Recursively collects all .js files from a directory tree.
-     */
-    _collectCommandFiles(dir) {
-        const results = [];
-        if (!fs.existsSync(dir)) return results;
-
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-            const fullPath = path.join(dir, entry.name);
-            if (entry.isDirectory()) {
-                results.push(...this._collectCommandFiles(fullPath));
-            } else if (entry.isFile() && entry.name.endsWith('.js')) {
-                results.push(fullPath);
-            }
-        }
-        return results;
-    }
-
-    /**
-     * Loads all command modules from the commands directory (recursively).
-     * Returns an array of successfully loaded command names.
-     */
+export class CommandHandler {
+    constructor(registry = commands) { this.commands = new Map(registry.map(command => [command.data.name,command])); }
     async loadCommands() {
-        const commandsPath = path.join(__dirname, '../commands');
-        if (!fs.existsSync(commandsPath)) {
-            log.warn('Commands folder not found:', commandsPath);
-            return [];
-        }
-
-        const filePaths = this._collectCommandFiles(commandsPath);
-        log.info(`Found ${filePaths.length} command file(s) (recursive scan).`);
-
-        const loaded = [];
-
-        for (const absolutePath of filePaths) {
-            const relativeName = path.relative(commandsPath, absolutePath);
-            const fileUrl = `file://${absolutePath.replace(/\\/g, '/')}`;
-            try {
-                const module = await import(fileUrl);
-                const command = module.command;
-                if (command && command.data) {
-                    this.commands.set(command.data.name, command);
-                    loaded.push(command.data.name);
-                    log.debug(`Loaded: /${command.data.name} (from ${relativeName})`);
-                } else {
-                    log.warn(`${relativeName} does not export a valid command object.`);
-                }
-            } catch (e) {
-                log.error(`Failed to load ${relativeName}:`, e);
-            }
-        }
-
-        if (loaded.length > 0) {
-            log.info(`Successfully loaded ${loaded.length} command(s): ${loaded.join(', ')}`);
-        } else {
-            log.warn('No commands were successfully loaded.');
-        }
-
-        return loaded;
+        for (const command of this.commands.values()) command.data.toJSON();
+        return [...this.commands.keys()];
     }
-
-    async handleInteraction(interaction, context) {
-        if (!interaction.isChatInputCommand()) return;
-
-        const command = this.commands.get(interaction.commandName);
-        if (!command) {
-            logHandler.warn(`Unknown command: /${interaction.commandName}`);
-            return;
+    async register(rest,route) {
+        const expected = [...this.commands.values()].map(command => command.data.toJSON());
+        await rest.put(route,{body:expected});
+        const live = await rest.get(route);
+        const names = live.map(command => command.name).sort();
+        const wanted = expected.map(command => command.name).sort();
+        if (JSON.stringify(names) !== JSON.stringify(wanted)) throw new Error('Discord command registry does not match this build');
+        for(const command of expected) {
+            if(JSON.stringify(definition(command)) !== JSON.stringify(definition(live.find(item => item.name === command.name))))
+                throw new Error('Discord command definition does not match this build: ' + command.name);
         }
-
+        return names;
+    }
+    async handleInteraction(interaction,context) {
+        if (!interaction.isChatInputCommand()) return;
+        if (!interaction.guildId) return interaction.reply({content:'Use commands in a server.',flags:64});
+        const command = this.commands.get(interaction.commandName);
         try {
-            logHandler.info(`Executing /${interaction.commandName} by ${interaction.user.tag}`);
-            await command.execute(interaction, context);
-        } catch (error) {
-            logHandler.error(`Error in /${interaction.commandName}:`, error);
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: '❌ Internal Error executing command.', ephemeral: true }).catch(() => { });
-            } else {
-                await interaction.reply({ content: '❌ Internal Error executing command.', ephemeral: true }).catch(() => { });
-            }
+            if (!command) throw Object.assign(new Error('Command is unavailable in this build.'),{status:404});
+            if (!context.ready()) throw Object.assign(new Error('Bot dependencies are starting or unavailable. Please retry.'),{status:503});
+            await command.execute(interaction,context);
+        } catch(error) {
+            console.error('[Command]',interaction.commandName,error.message);
+            const response = {content:error.status ? error.message : 'Command failed. Check the backend logs.',allowedMentions:{parse:[]}};
+            if (interaction.deferred) await interaction.editReply(response).catch(() => {});
+            else if (interaction.replied) await interaction.followUp({...response,flags:64}).catch(() => {});
+            else await interaction.reply({...response,flags:64}).catch(() => {});
         }
     }
 }
-
 export default new CommandHandler();

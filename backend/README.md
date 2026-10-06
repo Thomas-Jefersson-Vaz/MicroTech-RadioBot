@@ -1,27 +1,9 @@
-# MikroTech Backend (API & Orchestrator)
+# MikroTech backend
 
-This is the Node.js backend service for MikroTech Radio V3. It handles:
-- Discord Gateway connection (interactions).
-- Lavalink audio node management.
-- REST API for the Dashboard.
-- Database orchestration (Postgres/Redis).
+Node.js 24 / Express API, Discord commands, Shoukaku/NodeLink orchestration, Redis queues/sessions and PostgreSQL migrations.
 
-## Setup
+Run `npm ci`, then `npm run dev` for hybrid development or `npm start` for production. Configuration comes from the root `.env` or injected container variables.
 
-1.  Ensure infrastructure is running:
-    ```bash
-    cd ..
-    docker compose up -d
-    ```
-2.  Install dependencies:
-    ```bash
-    npm install
-    ```
-3.  Configure `.env` in the project root.
+Run `npm test` for local playback, permission, provider, HTTP/WebSocket and PostgreSQL-WASM checks. `npm run test:integration` uses real PostgreSQL/Redis when `TEST_PG_URL` and `TEST_REDIS_URL` are set. Command documentation is generated with `npm run docs:commands`.
 
-## Running
-
-```bash
-npm start
-```
-The API will start on port `3000` (default) and connect to Lavalink on port `2333`.
+See the [root setup guide](../README.md), [API reference](../docs/api.md) and [release validation](../docs/validation.md).

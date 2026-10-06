@@ -1,679 +1,403 @@
 import QueueService from './queue.js';
 import DatabaseService from './database.js';
 import YtdlpService from './ytdlp.js';
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { Serial, deadline } from '../utils/serial.js';
+import { fail, integer, text } from '../utils/validation.js';
 import createLogger from '../utils/logger.js';
 
 const log = createLogger('Player');
-
-/**
- * Maximum consecutive track failures before playNext() gives up.
- * Prevents infinite loops when an entire queue is unresolvable.
- */
-const MAX_SKIP_RETRIES = 5;
-
-/**
- * Timeout for JIT track resolution via Lavalink REST (ms).
- * Prevents a single hung resolve from blocking the entire player.
- */
-const JIT_RESOLVE_TIMEOUT = 15000;
-
-class PlayerController extends EventEmitter {
-    constructor(client, lavalink) {
+export const FILTERS = {
+    reset: {},
+    bassboost: { equalizer: [{ band: 0, gain: 0.2 }, { band: 1, gain: 0.15 }, { band: 2, gain: 0.1 }] },
+    nightcore: { timescale: { speed: 1.2, pitch: 1.2, rate: 1 } },
+    vaporwave: { timescale: { speed: 0.85, pitch: 0.8, rate: 1 } }
+};
+export default class PlayerController extends EventEmitter {
+    constructor(client, lavalink, { queue = QueueService, database = DatabaseService, extractor = YtdlpService, timeout = 15000 } = {}) {
         super();
-        this.client = client;
-        this.lavalink = lavalink;
-        this.shoukaku = lavalink.shoukaku;
-
+        Object.assign(this, { client, lavalink, shoukaku: lavalink.shoukaku, queue, database, extractor, timeout });
         this.currentTracks = new Map();
-        this.playerStates = new Map(); // { position, timestamp, paused, duration }
-
-        /** Per-guild lock to prevent concurrent playNext() calls */
-        this._playLocks = new Map();
-
-        /**
-         * Prefetch cache: guildId → { encoded, info, requester, ... }
-         * Holds the pre-resolved next track so transitions are instant.
-         */
-        this._prefetchCache = new Map();
+        this.playerStates = new Map();
+        this.generations = new Map();
+        this.prefetch = new Map();
+        this.serial = new Serial();
+        this.revisions = new Map();
+        this.options = new Map();
+        this.diagnostics = { earlyEndings: 0, failures: 0 };
+        this.failureStreaks = new Map();
+        this.lastErrors = new Map();
+        this.voiceClosed = new Set();
+        this.on('failure', failure => { this.lastErrors.set(failure.guildId, failure.message); this.changed(failure.guildId); });
     }
-
-    getCurrentTrack(guildId) {
-        return this.currentTracks.get(guildId) || null;
+    generation(id) { return this.generations.get(id) || 0; }
+    invalidate(id) { this.generations.set(id, this.generation(id) + 1); this.prefetch.delete(id); }
+    changed(id) {
+        this.revisions.set(id, (this.revisions.get(id) || 0) + 1);
+        this.emit('change', id);
     }
-
-    /**
-     * Get the current player state with interpolated position.
-     * Position is estimated between Lavalink update intervals for smooth progress.
-     */
-    getPlayerState(guildId) {
-        const state = this.playerStates.get(guildId);
+    getCurrentTrack(id) { return this.currentTracks.get(id) || null; }
+    getPlayerState(id) {
+        const state = this.playerStates.get(id);
         if (!state) return null;
-
-        // Interpolate position based on elapsed time since last update
-        let position = state.position;
-        if (!state.paused && state.timestamp) {
-            const elapsed = Date.now() - state.timestamp;
-            position = Math.min(state.position + elapsed, state.duration || Infinity);
-        }
-
-        return {
-            position: Math.floor(position),
-            duration: state.duration || 0,
-            paused: state.paused || false,
-        };
+        const elapsed = state.paused || !state.connected ? 0 : Date.now() - state.timestamp;
+        const speed = (this.options.get(id)?.filter === 'nightcore' ? 1.2 : this.options.get(id)?.filter === 'vaporwave' ? 0.85 : 1);
+        const position = Math.max(0, Math.min(state.position + elapsed * speed, state.duration || Infinity));
+        return { position: Math.floor(position), duration: state.duration, paused: state.paused, connected: state.connected };
     }
-
-    // ── Helpers ────────────────────────────────────────────────────────────────
-
-    /**
-     * Strip & return trailing flags (-s, -r, --shuffle …) from a raw query string.
-     * Fixed to properly handle multiple flags (e.g. "-s -r").
-     */
-    _parseFlags(raw) {
+    async snapshot(id) {
+        if (!this.options.has(id)) {
+            const saved = await this.database.getGuildSettings(id);
+            if (!this.options.has(id)) this.options.set(id, { volume: saved?.volume_preferencial ?? 100, filter: 'reset' });
+        }
+        return { guildId: id, revision: this.revisions.get(id) || 0, queue: await this.queue.getQueue(id),
+            current: this.getCurrentTrack(id), playerState: this.getPlayerState(id), playbackError: this.lastErrors.get(id) || null, settings: this.options.get(id) || { volume: 100, filter: 'reset' } };
+    }
+    node() { return this.shoukaku.options.nodeResolver(this.shoukaku.nodes); }
+    async ensurePlayer(id, channelId, textChannelId) {
+        let player = this.shoukaku.players.get(id);
+        if (player && !this.voiceClosed.has(id)) return player;
+        if (!channelId) fail('Join a voice channel to reconnect playback', 403);
+        if (!this.node()) fail('Audio engine unavailable; queue retained', 503);
+        const current = this.currentTracks.get(id);
+        const state = this.getPlayerState(id);
+        await this.shoukaku.leaveVoiceChannel(id);
+        player = await this.shoukaku.joinVoiceChannel({ guildId: id, channelId, shardId: this.client.guilds?.cache.get(id)?.shardId || 0 });
+        this.setupPlayerEvents(player, id, textChannelId);
+        if (!this.options.has(id)) {
+            const saved = await this.database.getGuildSettings(id);
+            this.options.set(id, { volume: saved?.volume_preferencial ?? 100, filter: 'reset' });
+        }
+        await player.setGlobalVolume(this.options.get(id).volume);
+        const preset = this.options.get(id).filter;
+        if (preset !== 'reset') await player.setFilters(FILTERS[preset]);
+        if (current && !current.terminal) {
+            await player.playTrack({ track: { encoded: current.encoded, userData: { playbackToken: current.playbackToken } },
+                userData: { playbackToken: current.playbackToken }, position: state?.position || 0, paused: state?.paused || false });
+            Object.assign(this.playerStates.get(id), { connected: true, timestamp: Date.now() });
+        }
+        this.voiceClosed.delete(id);
+        this.changed(id);
+        return player;
+    }
+    buildSearch(raw, source = 'ytsearch') {
+        const query = raw.trim().replace(/^url:/, '');
+        if (/^https?:\/\//i.test(query)) {
+            const url = new URL(query);
+            if (url.hostname === 'music.youtube.com') url.hostname = 'www.youtube.com';
+            if (url.hostname === 'www.youtube.com' || url.hostname === 'youtube.com' || url.hostname === 'youtu.be') url.searchParams.delete('si');
+            return url.toString();
+        }
+        return source + ':' + query;
+    }
+    extract(result) {
+        if (result?.loadType === 'track') return [result.data];
+        if (result?.loadType === 'playlist') return result.data.tracks || [];
+        if (result?.loadType === 'search') return result.data.length ? [result.data[0]] : [];
+        return [];
+    }
+    async resolve(node, raw, fallback) {
+        const started = Date.now();
+        const queries = [this.buildSearch(raw)];
+        if (fallback) queries.push('ytsearch:' + fallback, 'ytmsearch:' + fallback);
+        else if (!/^https?:\/\//i.test(raw.replace(/^url:/, ''))) queries.push('ytmsearch:' + raw);
+        // One overall deadline covers all attempts; transport errors retain the queue entry.
+        const result = await deadline(async () => {
+            for (const query of queries) {
+                const response = await node.rest.resolve(query);
+                if (response?.loadType === 'error') {
+                    log.warn('Source resolve error', { query, message: response.data?.message });
+                    continue;
+                }
+                const tracks = this.extract(response);
+                if (tracks.length) return { tracks, playlistName: response.loadType === 'playlist' ? response.data.info.name : null };
+            }
+            return { tracks: [], playlistName: null };
+        }, this.timeout);
+        log.debug('Resolution completed', { milliseconds: Date.now() - started, count: result.tracks.length });
+        return result;
+    }
+    async enqueue(id, channelId, user, raw, textChannelId) {
+        if (!channelId) fail('Join a voice channel first', 403);
+        text(raw, 2000, 'Query');
+        const generation = this.generation(id);
+        const node = this.node();
+        if (!node) fail('Audio engine unavailable; please retry', 503);
         const flags = { shuffle: false, reverse: false };
-
-        // Match all trailing flag tokens individually
-        const cleaned = raw.replace(/(\s+-{1,2}\w+)+\s*$/, (match) => {
-            // Split the matched portion into individual flags
-            const tokens = match.trim().split(/\s+/);
-            for (const token of tokens) {
-                const flag = token.replace(/^-{1,2}/, '');
-                if (flag === 's' || flag === 'shuffle') flags.shuffle = true;
-                if (flag === 'r' || flag === 'reverse') flags.reverse = true;
-            }
+        const cleaned = raw.replace(/(?:\s+--?(?:s|r|shuffle|reverse))+\s*$/, match => {
+            flags.shuffle = /--?(?:s|shuffle)(?:\s|$)/.test(match);
+            flags.reverse = /--?(?:r|reverse)(?:\s|$)/.test(match);
             return '';
-        }).trim();
-
-        return { cleaned, flags };
-    }
-
-    /** Normalise a single URL/term into a Lavalink-ready search string */
-    _buildSearch(query, source) {
-        query = query.trim();
-        // Strip 'url:' prefix that Discord/some clients prepend to embedded URLs
-        if (query.startsWith('url:')) query = query.slice(4);
-        if (/^https?:\/\//.test(query)) {
-            if (query.includes('music.youtube.com')) {
-                return query
-                    .replace('music.youtube.com', 'www.youtube.com')
-                    .replace(/[?&]si=[^&]*/g, '')
-                    .replace(/\?&/, '?').replace(/&$/, '').replace(/\?$/, '');
-            }
-            if (query.includes('youtube.com') || query.includes('youtu.be')) {
-                return query
-                    .replace(/[?&]si=[^&]*/g, '')
-                    .replace(/\?&/, '?').replace(/&$/, '').replace(/\?$/, '');
-            }
-            return query; // other direct URLs pass through
-        }
-        return `${source}:${query}`;
-    }
-
-    /** Resolve a single search string via Lavalink, with ytmsearch fallback */
-    async _resolve(node, rawQuery, source) {
-        const isUrl = /^https?:\/\//.test(rawQuery.trim());
-        const search = this._buildSearch(rawQuery, source);
-        log.debug(`Resolving: ${search}`);
-        let result = await node.rest.resolve(search);
-
-        // Fallback to YouTube Music search when text search returns nothing
-        if (!isUrl && (!result || result.loadType === 'empty' || result.loadType === 'error')) {
-            log.debug(`ytsearch empty — retrying with ytmsearch: ${rawQuery.trim()}`);
-            result = await node.rest.resolve(`ytmsearch:${rawQuery.trim()}`);
-        }
-        return result;
-    }
-
-    /**
-     * Resolve a track URL with a timeout to prevent hanging.
-     * Applies URL normalization via _buildSearch and, if the direct URL
-     * returns nothing, falls back to a title-based ytsearch/ytmsearch.
-     *
-     * @param {object} node - Lavalink node
-     * @param {string} url - Track URL to resolve
-     * @param {string|null} fallbackTitle - Track title for search fallback
-     * @param {number} timeoutMs - Timeout in ms
-     * @returns {Promise<object>} Lavalink resolve result
-     */
-    async _resolveWithTimeout(node, url, fallbackTitle = null, timeoutMs = JIT_RESOLVE_TIMEOUT) {
-        // Normalise the URL (strip tracking params, convert music.youtube.com, etc.)
-        const normalised = this._buildSearch(url, 'ytsearch');
-        log.debug(`JIT resolve URL: raw="${url}" → normalised="${normalised}"`);
-
-        const withTimeout = (promise) => Promise.race([
-            promise,
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error(`JIT resolution timed out after ${timeoutMs}ms`)), timeoutMs)
-            ),
-        ]);
-
-        // Attempt 1: direct URL resolve
-        let result = await withTimeout(node.rest.resolve(normalised));
-        log.debug(`JIT resolve attempt 1 (direct): loadType=${result?.loadType}`);
-
-        if (this._extractTracks(result).length > 0) return result;
-
-        // Attempt 2: ytsearch by title (if we have a title)
-        if (fallbackTitle) {
-            log.debug(`JIT direct URL empty — fallback ytsearch: "${fallbackTitle}"`);
-            result = await withTimeout(node.rest.resolve(`ytsearch:${fallbackTitle}`));
-            log.debug(`JIT resolve attempt 2 (ytsearch): loadType=${result?.loadType}`);
-
-            if (this._extractTracks(result).length > 0) return result;
-
-            // Attempt 3: ytmsearch by title
-            log.debug(`JIT ytsearch empty — fallback ytmsearch: "${fallbackTitle}"`);
-            result = await withTimeout(node.rest.resolve(`ytmsearch:${fallbackTitle}`));
-            log.debug(`JIT resolve attempt 3 (ytmsearch): loadType=${result?.loadType}`);
-        }
-
-        return result;
-    }
-
-    /** Extract tracks array from a Lavalink result object */
-    _extractTracks(result) {
-        if (!result || result.loadType === 'empty' || result.loadType === 'error') return [];
-        if (result.loadType === 'playlist') return result.data.tracks;
-        if (result.loadType === 'track') return [result.data];
-        if (result.loadType === 'search') return result.data.length ? [result.data[0]] : [];
-        if (Array.isArray(result.data)) return result.data;
-        return result.data ? [result.data] : [];
-    }
-
-    /**
-     * Format a duration in ms to a human-readable string (e.g. "3m 24s").
-     */
-    _formatDuration(ms) {
-        if (!ms || ms <= 0) return '??:??';
-        const totalSec = Math.floor(ms / 1000);
-        const h = Math.floor(totalSec / 3600);
-        const m = Math.floor((totalSec % 3600) / 60);
-        const s = totalSec % 60;
-        if (h > 0) return `${h}h ${m}m ${s}s`;
-        return `${m}m ${s}s`;
-    }
-
-    // ── Prefetch ──────────────────────────────────────────────────────────────
-
-    /**
-     * Pre-resolve the next track in the queue so it's ready for instant playback.
-     * Runs in the background — failures are silently swallowed (playNext handles them).
-     */
-    async _prefetchNext(guildId) {
-        try {
-            const peeked = await QueueService.peek(guildId);
-            if (!peeked) {
-                this._prefetchCache.delete(guildId);
-                return;
-            }
-
-            // Already has an encoded string — no resolution needed
-            if (peeked.encoded) {
-                this._prefetchCache.set(guildId, peeked);
-                log.debug(`[${guildId}] Prefetch: "${peeked.info?.title}" already encoded`);
-                return;
-            }
-
-            const trackUrl = peeked.url || peeked.info?.uri;
-            if (!trackUrl) {
-                this._prefetchCache.delete(guildId);
-                return;
-            }
-
-            const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
-            if (!node) {
-                this._prefetchCache.delete(guildId);
-                return;
-            }
-
-            const fallbackTitle = peeked.info?.title || null;
-            log.debug(`[${guildId}] Prefetch: resolving "${fallbackTitle || trackUrl}"...`);
-            const startMs = Date.now();
-            const result = await this._resolveWithTimeout(node, trackUrl, fallbackTitle);
-            const resolved = this._extractTracks(result);
-
-            if (resolved.length > 0) {
-                const prefetched = { ...resolved[0], requester: peeked.requester };
-                this._prefetchCache.set(guildId, prefetched);
-                log.info(`[${guildId}] Prefetch: ✅ "${prefetched.info?.title}" ready (${Date.now() - startMs}ms)`);
-            } else {
-                this._prefetchCache.delete(guildId);
-                log.debug(`[${guildId}] Prefetch: ⚠ No results for "${peeked.info?.title || trackUrl}"`);
-            }
-        } catch (err) {
-            this._prefetchCache.delete(guildId);
-            log.debug(`[${guildId}] Prefetch: failed (non-critical) — ${err.message}`);
-        }
-    }
-
-    // ── Main play handler ───────────────────────────────────────────────────────
-
-    async handlePlay(interaction, rawQuery, source = 'ytsearch') {
-        const guildId = interaction.guildId;
-        const channelId = interaction.member.voice.channelId;
-        const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
-
-        if (!channelId) throw new Error('You need to be in a voice channel');
-        if (!node) throw new Error('No audio nodes available');
-
-        log.info(`[${guildId}] /play by ${interaction.user.tag}: "${rawQuery}"`);
-
-        // 1. Parse flags from the end of the full query string
-        const { cleaned: fullCleaned, flags } = this._parseFlags(rawQuery.trim());
-
-        // 2. Split on ' && ' to support multiple URLs/terms in one command
-        const parts = fullCleaned.split(/\s+&&\s+/).map(p => p.trim()).filter(Boolean);
-
-        // 3. Resolve each part — use yt-dlp for playlist URLs, Lavalink for everything else
-        let allTracks = [];
-        let playlistNames = [];
-
-        for (const part of parts) {
-            if (YtdlpService.isPlaylistUrl(part)) {
-                // ── yt-dlp path: extract full playlist metadata (no track limit) ──
+        });
+        const tracks = [];
+        const playlistNames = [];
+        for (const part of cleaned.split(/\s*&&\s*/).map(p => p.trim()).filter(Boolean)) {
+            let resolved;
+            if (this.extractor.isPlaylistUrl(part) && !part.includes('open.spotify.com')) {
                 try {
-                    const { tracks, playlistName } = await YtdlpService.extractPlaylist(part);
-                    if (playlistName) playlistNames.push(playlistName);
-                    const enriched = tracks.map(t => ({
-                        // Lightweight stub — no `encoded` field, resolved just-in-time in playNext()
-                        info: {
-                            title: t.title,
-                            uri: t.url,
-                            length: t.duration,
-                        },
-                        url: t.url,
-                        requester: { id: interaction.user.id, username: interaction.user.username },
-                    }));
-                    allTracks.push(...enriched);
-                    log.info(`[${guildId}] yt-dlp: extracted ${tracks.length} tracks from "${playlistName}"`);
-                } catch (err) {
-                    log.warn(`[${guildId}] yt-dlp failed for ${part}, falling back to Lavalink:`, err.message);
-                    // Fallback to Lavalink if yt-dlp fails
-                    const result = await this._resolve(node, part, source);
-                    if (result?.loadType === 'playlist') playlistNames.push(result.data.info.name);
-                    const tracks = this._extractTracks(result).map(t => ({
-                        ...t,
-                        requester: { id: interaction.user.id, username: interaction.user.username }
-                    }));
-                    allTracks.push(...tracks);
-                }
-            } else {
-                // ── Lavalink path: single track / search (unchanged) ──
-                const result = await this._resolve(node, part, source);
-                if (result?.loadType === 'playlist') playlistNames.push(result.data.info.name);
-                const tracks = this._extractTracks(result).map(t => ({
-                    ...t,
-                    requester: { id: interaction.user.id, username: interaction.user.username }
-                }));
-                allTracks.push(...tracks);
-            }
+                    const result = await this.extractor.extractPlaylist(part);
+                    if (!result.tracks.length) throw new Error('Playlist extraction returned no tracks');
+                    resolved = { tracks: result.tracks.map(t => ({ url: t.url, info: { title: t.title, uri: t.url, length: t.duration, author: t.author || 'Unknown' } })), playlistName: result.playlistName };
+                } catch (error) { log.warn('Playlist extractor failed; trying audio engine', error.message); resolved = await this.resolve(node, part); }
+            } else resolved = await this.resolve(node, part);
+            if (resolved.playlistName) playlistNames.push(resolved.playlistName);
+            tracks.push(...resolved.tracks.map(track => ({ ...track, requester: { id: user.id, username: user.username } })));
         }
-
-        if (allTracks.length === 0) {
-            log.warn(`[${guildId}] /play resolved 0 tracks for: "${rawQuery}"`);
-            return { type: 'empty' };
-        }
-
-        // 4. Apply flags to the merged track list
-        if (flags.shuffle) {
-            for (let i = allTracks.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [allTracks[i], allTracks[j]] = [allTracks[j], allTracks[i]];
-            }
-        }
-        if (flags.reverse) allTracks.reverse();
-
-        // 5. Add all tracks to the Redis queue in one shot
-        const queueLen = await QueueService.add(guildId, allTracks);
-        log.info(`[${guildId}] Queued ${allTracks.length} track(s) (queue size: ${queueLen})`);
-
-        // Check if player exists in this Shoukaku session
-        let player = this.shoukaku.players.get(guildId);
-
-        if (!player) {
-            // Leave any stale Lavalink player from a previous bot session before joining
-            try {
-                await this.shoukaku.leaveVoiceChannel(guildId);
-            } catch (_) { /* no stale player — that's fine */ }
-
-            try {
-                player = await this.shoukaku.joinVoiceChannel({
-                    guildId: guildId,
-                    channelId: channelId,
-                    shardId: 0
-                });
-                log.info(`[${guildId}] Joined voice channel ${channelId}`);
-            } catch (err) {
-                log.error(`[${guildId}] joinVoiceChannel failed:`, err.message);
-                throw new Error('Could not connect to your voice channel. Make sure I have permission and you are in the server\'s voice channel.');
-            }
-
-            this.setupPlayerEvents(player, guildId, interaction.channelId);
-            await this.playNext(guildId);
-        }
-
-        return {
-            type: allTracks.length === 1 ? 'track' : 'playlist',
-            count: allTracks.length,
-            track: allTracks[0],
-            playlistNames,
-            flags
-        };
-    }
-
-    setupPlayerEvents(player, guildId, textChannelId) {
-        player.on('start', (data) => {
-            const track = this.currentTracks.get(guildId);
-            const title = track?.info?.title || 'Unknown';
-            const uri = track?.info?.uri || 'N/A';
-            const duration = this._formatDuration(track?.info?.length);
-            const requester = track?.requester?.username || 'System';
-
-            log.info(`[${guildId}] ▶ TRACK START: "${title}" [${duration}] | URI: ${uri} | TextChannel: ${textChannelId} | Requested by: ${requester}`);
-
-            this.emit('trackStart', { guildId, textChannelId, track: data.track });
-
-            // Reset player state for new track
-            const durationMs = track?.info?.length || 0;
-            this.playerStates.set(guildId, {
-                position: 0,
-                timestamp: Date.now(),
-                paused: false,
-                duration: durationMs,
-            });
-
-            // Record to PostgreSQL history
-            if (track?.info) {
-                DatabaseService.recordHistory(
-                    guildId,
-                    track.info.title,
-                    track.info.uri,
-                    track.requester?.id || null
-                );
-            }
-
-            // Kick off prefetch for the next track while this one plays
-            this._prefetchNext(guildId).catch(() => { /* non-critical */ });
+        if (!tracks.length) return { type: 'empty', count: 0 };
+        if (flags.shuffle) for (let i = tracks.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [tracks[i], tracks[j]] = [tracks[j], tracks[i]]; }
+        if (flags.reverse) tracks.reverse();
+        return this.serial.run(id, async () => {
+            if (generation !== this.generation(id)) fail('Playback changed while resolving; please retry', 409);
+            // Membership is refreshed after potentially slow playlist extraction.
+            if (this.authorize) channelId = (await this.authorize(id, user.id, true)).channelId;
+            await this.ensurePlayer(id, channelId, textChannelId);
+            if (generation !== this.generation(id)) return { type: 'empty', count: 0 };
+            await this.queue.add(id, tracks);
+            this.lastErrors.delete(id);
+            this.failureStreaks.set(id, 0);
+            this.changed(id);
+            if (!this.currentTracks.has(id)) await this.advance(id, generation);
+            else void this.prefetchNext(id);
+            return { type: tracks.length === 1 ? 'track' : 'playlist', count: tracks.length, track: tracks[0], playlistNames, flags };
         });
-
-        player.on('end', async (data) => {
-            const track = this.currentTracks.get(guildId);
-            const title = track?.info?.title || 'Unknown';
-            const state = this.playerStates.get(guildId);
-            const playedFor = state ? this._formatDuration(state.position + (state.paused ? 0 : Date.now() - state.timestamp)) : '??';
-            const duration = this._formatDuration(track?.info?.length);
-
-            log.info(`[${guildId}] ⏹ TRACK END: "${title}" | reason=${data.reason} | TextChannel: ${textChannelId} | played=${playedFor}/${duration}`);
-
-            // 'replaced' = another track was loaded directly (not a skip/stop)
-            // 'stopped' = explicit stopTrack() call — skip() and stop() handle their own flow
-            if (data.reason === 'replaced' || data.reason === 'stopped') {
-                log.debug(`[${guildId}] End reason "${data.reason}" — not auto-advancing`);
+    }
+    async enqueueTracks(id, channelId, user, tracks) {
+        const generation = this.generation(id);
+        return this.serial.run(id, async () => {
+            if (this.authorize) channelId = (await this.authorize(id, user.id, true)).channelId;
+            await this.ensurePlayer(id, channelId);
+            if (generation !== this.generation(id)) fail('Playback changed; retry', 409);
+            await this.queue.add(id, tracks.map(t => ({ ...t, requester: { id: user.id, username: user.username } })));
+            this.lastErrors.delete(id);
+            this.failureStreaks.set(id, 0);
+            this.changed(id);
+            if (!this.currentTracks.has(id)) await this.advance(id, generation);
+            else void this.prefetchNext(id);
+            return { count: tracks.length };
+        });
+    }
+    async prefetchNext(id) {
+        const generation = this.generation(id);
+        try {
+            const head = await this.queue.peek(id);
+            if (!head?.id || !this.node()) return;
+            const resolved = head.encoded ? head : { ...(await this.resolve(this.node(), head.url || head.info.uri, head.info.title)).tracks[0], requester: head.requester, id: head.id };
+            if (resolved?.encoded && generation === this.generation(id) && (await this.queue.peek(id))?.id === head.id)
+                this.prefetch.set(id, { id: head.id, track: resolved, generation });
+        } catch (error) { log.debug('Prefetch deferred', error.message); }
+    }
+    matches(id, data) {
+        const current = this.currentTracks.get(id);
+        if (!current || current.terminal) return false;
+        const token = data.track?.userData?.playbackToken;
+        // Token-capable engines distinguish consecutive copies of the same song.
+        if (token) return token === current.playbackToken;
+        return Boolean(data.track?.encoded && data.track.encoded === current.encoded);
+    }
+    setupPlayerEvents(player, id, textChannelId) {
+        const safe = operation => (...args) => { Promise.resolve().then(() => operation(...args)).catch(error => log.error('Player event failed', { guildId: id, message: error.message })); };
+        player.on('start', safe(async data => {
+            if (!this.matches(id, data)) return;
+            const current = this.currentTracks.get(id);
+            if (current.started) return;
+            current.started = true;
+            log.info('Track started', { guildId: id, entryId: current.id, token: current.playbackToken, title: current.info.title, textChannelId });
+            await this.database.recordHistory(id, current.info.title, current.info.uri, current.requester?.id);
+            this.changed(id);
+            void this.prefetchNext(id);
+        }));
+        const terminal = (data, stuck = false) => {
+            if (!this.matches(id, data) || ['replaced', 'stopped'].includes(data.reason)) return;
+            const current = this.currentTracks.get(id);
+            const state = this.getPlayerState(id);
+            const generation = this.generation(id);
+            current.terminal = true; // Claim the event before the asynchronous queue operation.
+            const early = data.reason === 'finished' && !current.info.isStream && state?.duration > 0 && state.position < state.duration - Math.max(5000, state.duration * 0.05);
+            const failed = stuck || data.reason === 'loadFailed' || early;
+            const streak = failed ? (this.failureStreaks.get(id) || 0) + 1 : 0;
+            this.failureStreaks.set(id, streak);
+            if (early) this.diagnostics.earlyEndings++;
+            log[early ? 'warn' : 'info']('Track ended', { guildId: id, entryId: current.id, reason: data.reason || 'stuck', position: state?.position, duration: state?.duration, early });
+            void this.serial.run(id, async () => {
+                if (generation !== this.generation(id)) return;
+                if (stuck) await player.stopTrack();
+                this.currentTracks.delete(id);
+                this.playerStates.delete(id);
+                if (streak >= 5) {
+                    this.diagnostics.failures++;
+                    this.changed(id);
+                    this.emit('failure', { guildId: id, message: 'Five playback failures in a row. Remaining queue retained; use /resume to retry.' });
+                    return;
+                }
+                await this.advance(id, generation);
+            }).catch(error => log.error('Track transition failed', error.message));
+        };
+        player.on('end', terminal);
+        player.on('stuck', data => terminal(data, true));
+        player.on('exception', data => { this.diagnostics.failures++; log.error('Track exception', { guildId: id, message: data.exception?.message || data.message }); });
+        player.on('update', data => {
+            const state = this.playerStates.get(id);
+            if (!state || this.currentTracks.get(id)?.terminal || !data.state) return;
+            state.position = data.state.position || 0;
+            state.timestamp = Date.now();
+            state.connected = data.state.connected !== false;
+            if (state.position >= 5000) this.failureStreaks.set(id, 0);
+            this.changed(id);
+        });
+        player.on('closed', data => {
+            this.invalidate(id);
+            this.voiceClosed.add(id);
+            const state = this.playerStates.get(id);
+            if (state) { state.position = this.getPlayerState(id).position; state.connected = false; state.timestamp = Date.now(); }
+            log.warn('Voice connection closed; preserving queue', { guildId: id, code: data.code, reason: data.reason });
+            this.changed(id);
+        });
+        player.on('resumed', () => {
+            const state = this.playerStates.get(id);
+            if (state) { state.connected = true; state.paused = player.paused; state.timestamp = Date.now(); }
+            this.changed(id);
+        });
+    }
+    async advance(id, generation = this.generation(id)) {
+        const player = this.shoukaku.players.get(id);
+        if (!player) return;
+        for (let failures = 0; failures < 5; failures++) {
+            if (generation !== this.generation(id)) return;
+            const node = this.node();
+            if (!node) { this.changed(id); return; }
+            const head = await this.queue.peek(id);
+            if (!head) { this.currentTracks.delete(id); this.playerStates.delete(id); this.changed(id); return; }
+            let track = head;
+            const prefetched = this.prefetch.get(id);
+            this.prefetch.delete(id);
+            try {
+                if (prefetched?.id === head.id && prefetched.generation === generation) track = prefetched.track;
+                else if (!head.encoded) {
+                    const resolved = await this.resolve(node, head.url || head.info.uri, head.info.title);
+                    if (generation !== this.generation(id)) return;
+                    if (!resolved.tracks.length) {
+                        await this.queue.next(id, head);
+                        this.diagnostics.failures++;
+                        log.warn('Unresolvable track skipped', { guildId: id, entryId: head.id, title: head.info.title });
+                        continue;
+                    }
+                    track = { ...resolved.tracks[0], id: head.id, requester: head.requester };
+                }
+                if (generation !== this.generation(id) || !this.node()) return;
+                if (!await this.queue.next(id, head)) continue;
+                const token = randomUUID();
+                this.currentTracks.set(id, { ...track, playbackToken: token });
+                this.playerStates.set(id, { position: 0, timestamp: Date.now(), duration: track.info.length || 0, paused: false, connected: true });
+                // NodeLink 2.x reads top-level userData after checking track.userData.
+                // Supply both forms; Lavalink uses the nested, standard form.
+                try { await player.playTrack({ track: { encoded: track.encoded, userData: { playbackToken: token } }, userData: { playbackToken: token } }); }
+                catch (error) {
+                    await this.queue.client.lPush('queue:' + id, JSON.stringify(head));
+                    this.currentTracks.delete(id);
+                    this.playerStates.delete(id);
+                    throw error;
+                }
+                this.changed(id);
+                return;
+            } catch (error) {
+                log.warn('Playback deferred; queue entry retained', { guildId: id, entryId: head.id, message: error.message });
+                this.lastErrors.set(id, 'Audio request failed; queue retained. Use Resume to retry.');
+                this.changed(id);
                 return;
             }
-
-            if (data.reason === 'loadFailed') {
-                log.warn(`[${guildId}] ⚠ TRACK LOAD FAILED: "${title}" | TextChannel: ${textChannelId} — auto-skipping to next`);
-            }
-
-            // Natural end ('finished') or loadFailed — advance to next track
-            await this.playNext(guildId);
-        });
-
-        player.on('stuck', async (data) => {
-            const track = this.currentTracks.get(guildId);
-            const title = track?.info?.title || 'Unknown';
-            const uri = track?.info?.uri || 'N/A';
-
-            log.warn(`[${guildId}] ⚠ TRACK STUCK: "${title}" (threshold: ${data.thresholdMs}ms) | TextChannel: ${textChannelId} | URI: ${uri}`);
-
-            // Stop the stuck track and advance directly
-            try {
-                player.stopTrack();
-            } catch (err) {
-                log.error(`[${guildId}] Error stopping stuck track:`, err.message);
-            }
-            // Advance explicitly — 'stopped' end events are filtered out
-            await this.playNext(guildId);
-        });
-
-        player.on('exception', (data) => {
-            const track = this.currentTracks.get(guildId);
-            const title = track?.info?.title || 'Unknown';
-            const uri = track?.info?.uri || 'N/A';
-            const errMsg = data.message || data.exception || JSON.stringify(data);
-
-            log.error(`[${guildId}] 💥 TRACK EXCEPTION: "${title}" | TextChannel: ${textChannelId} | URI: ${uri} | Error: ${errMsg}`);
-        });
-
-        player.on('closed', (data) => {
-            const code = data?.code ?? data;
-            const reason = data?.reason ?? '';
-            log.warn(`[${guildId}] 🔌 WebSocket closed — code=${code} reason="${reason}"`);
-
-            // Only clear queue on intentional disconnects
-            // 4014 = disconnected by Discord (kicked/moved)
-            // 1000 = normal closure (we called stop/leave)
-            if (code === 4014 || code === 1000) {
-                log.info(`[${guildId}] Intentional disconnect (code=${code}), clearing queue & prefetch`);
-                QueueService.clear(guildId);
-                this.currentTracks.delete(guildId);
-                this.playerStates.delete(guildId);
-                this._prefetchCache.delete(guildId);
-            } else {
-                // Transient failure — keep queue intact for potential resume
-                log.info(`[${guildId}] Transient disconnect (code=${code}), keeping queue for resume`);
-                // Update state to reflect disconnected status
-                const existing = this.playerStates.get(guildId);
-                if (existing) {
-                    existing.paused = true;
-                    existing.timestamp = Date.now();
-                    this.playerStates.set(guildId, existing);
-                }
-            }
-        });
-
-        player.on('resumed', () => {
-            log.info(`[${guildId}] 🔄 Player RESUMED after reconnect`);
-            // Re-sync paused state from the actual player
-            const existing = this.playerStates.get(guildId);
-            if (existing) {
-                existing.paused = player.paused;
-                existing.timestamp = Date.now();
-                this.playerStates.set(guildId, existing);
-            }
-        });
-
-        player.on('update', (update) => {
-            if (update.state) {
-                // Store real position from Lavalink for progress tracking
-                const existing = this.playerStates.get(guildId) || {};
-                this.playerStates.set(guildId, {
-                    ...existing,
-                    position: update.state.position || 0,
-                    timestamp: Date.now(),
-                });
-            }
-        });
-    }
-
-    /**
-     * Play the next track in the queue.
-     * Protected by a per-guild lock to prevent concurrent calls from racing.
-     */
-    async playNext(guildId) {
-        if (this._playLocks.get(guildId)) {
-            log.debug(`[${guildId}] playNext already in progress — skipping duplicate call`);
-            return;
         }
-        this._playLocks.set(guildId, true);
-
-        try {
-            await this._playNextInner(guildId);
-        } finally {
-            this._playLocks.delete(guildId);
-        }
+        this.currentTracks.delete(id);
+        this.playerStates.delete(id);
+        this.diagnostics.failures++;
+        this.changed(id);
+        this.emit('failure', { guildId: id, message: 'Five consecutive tracks could not resolve. Queue retained; use /resume to retry.' });
     }
-
-    /**
-     * Inner playNext logic — called only from the locked wrapper.
-     * Uses an iterative approach with a skip counter to prevent stack overflow
-     * when multiple consecutive tracks fail to resolve.
-     */
-    async _playNextInner(guildId) {
-        const player = this.shoukaku.players.get(guildId);
-        if (!player) return;
-
-        let consecutiveFailures = 0;
-
-        while (consecutiveFailures < MAX_SKIP_RETRIES) {
-            // ── Check prefetch cache first ──
-            const prefetched = this._prefetchCache.get(guildId);
-            this._prefetchCache.delete(guildId);
-
-            let nextTrack;
-            let trackToPlay;
-
-            if (prefetched) {
-                // Pop the track from the queue (it was only peeked during prefetch)
-                const popped = await QueueService.next(guildId);
-                if (!popped) {
-                    // Queue was cleared between prefetch and now
-                    log.info(`[${guildId}] Queue empty (prefetch stale), stopping player`);
-                    this.currentTracks.delete(guildId);
-                    this.playerStates.delete(guildId);
-                    player.stopTrack();
-                    return;
-                }
-                trackToPlay = prefetched;
-                log.debug(`[${guildId}] Using prefetched track: "${prefetched.info?.title}"`);
-            } else {
-                // No prefetch — pop and resolve normally
-                nextTrack = await QueueService.next(guildId);
-
-                if (!nextTrack) {
-                    log.info(`[${guildId}] 📭 Queue empty, stopping player`);
-                    this.currentTracks.delete(guildId);
-                    this.playerStates.delete(guildId);
-                    player.stopTrack();
-                    return;
-                }
-
-                // ── Just-in-time resolution for yt-dlp stubs ──
-                trackToPlay = nextTrack;
-
-                if (!nextTrack.encoded) {
-                    const trackUrl = nextTrack.url || nextTrack.info?.uri;
-                    if (!trackUrl) {
-                        log.error(`[${guildId}] Track has no encoded string and no URL — skipping: ${JSON.stringify(nextTrack.info || {})}`);
-                        consecutiveFailures++;
-                        continue;
-                    }
-
-                    const fallbackTitle = nextTrack.info?.title || null;
-                    log.info(`[${guildId}] 🔍 JIT resolving: "${fallbackTitle || trackUrl}" | URL: ${trackUrl}`);
-                    const resolveStart = Date.now();
-                    const node = this.shoukaku.options.nodeResolver(this.shoukaku.nodes);
-                    if (!node) {
-                        log.error(`[${guildId}] No Lavalink node available for JIT resolution — stopping`);
-                        return; // No node = can't play anything, don't loop
-                    }
-
-                    try {
-                        const result = await this._resolveWithTimeout(node, trackUrl, fallbackTitle);
-                        const resolved = this._extractTracks(result);
-                        if (resolved.length === 0) {
-                            log.warn(`[${guildId}] JIT resolution returned 0 tracks for: "${fallbackTitle || trackUrl}" | URL: ${trackUrl} | loadType: ${result?.loadType} (${Date.now() - resolveStart}ms)`);
-                            consecutiveFailures++;
-                            continue;
-                        }
-                        // Merge resolved Lavalink data with our metadata (keep requester, etc.)
-                        trackToPlay = { ...resolved[0], requester: nextTrack.requester };
-                        log.info(`[${guildId}] ✅ JIT resolved: "${trackToPlay.info?.title}" in ${Date.now() - resolveStart}ms`);
-                    } catch (err) {
-                        log.warn(`[${guildId}] JIT resolution failed for "${nextTrack.info?.title || trackUrl}": ${err.message}`);
-                        consecutiveFailures++;
-                        continue;
-                    }
-                }
+    async playNext(id) { return this.serial.run(id, () => this.advance(id)); }
+    async skip(id) {
+        this.invalidate(id);
+        return this.serial.run(id, async () => {
+            const player = this.shoukaku.players.get(id);
+            if (!player) return false;
+            this.failureStreaks.set(id, 0);
+            this.lastErrors.delete(id);
+            this.currentTracks.delete(id);
+            this.playerStates.delete(id);
+            if (player.track) await player.stopTrack();
+            await this.advance(id);
+            this.changed(id);
+            return true;
+        });
+    }
+    async stop(id) {
+        this.invalidate(id); // Cancels pending resolves immediately, before waiting for the lock.
+        return this.serial.run(id, async () => {
+            await this.queue.clear(id);
+            this.failureStreaks.delete(id);
+            this.lastErrors.delete(id);
+            this.currentTracks.delete(id);
+            this.playerStates.delete(id);
+            const player = this.shoukaku.players.get(id);
+            this.voiceClosed.delete(id);
+            try { if (player?.track) await player.stopTrack(); }
+            finally { await this.shoukaku.leaveVoiceChannel(id); this.changed(id); }
+            return true;
+        });
+    }
+    async pause(id, paused = true, channelId) {
+        return this.serial.run(id, async () => {
+            const player = !paused && channelId ? await this.ensurePlayer(id, channelId) : this.shoukaku.players.get(id);
+            if (!player) return false;
+            if (!paused && !this.currentTracks.has(id)) { this.lastErrors.delete(id); this.failureStreaks.set(id, 0); await this.advance(id); return true; }
+            const state = this.playerStates.get(id);
+            const position = this.getPlayerState(id)?.position || 0;
+            await player.setPaused(paused);
+            if (state) Object.assign(state, { position, paused, timestamp: Date.now() });
+            this.changed(id);
+            return true;
+        });
+    }
+    async editQueue(id, action, from, to) {
+        if (action === 'jump') this.invalidate(id);
+        return this.serial.run(id, async () => {
+            this.prefetch.delete(id);
+            if (action === 'clear') await this.queue.clear(id);
+            else await this.queue.edit(id, action, from, to);
+            if (action === 'jump') {
+                this.currentTracks.delete(id); this.playerStates.delete(id);
+                const player = this.shoukaku.players.get(id);
+                if (player) { if (player.track) await player.stopTrack(); await this.advance(id); }
             }
-
-            // ── Play the track ──
-            this.currentTracks.set(guildId, trackToPlay);
-            log.info(`[${guildId}] ▶ Playing: "${trackToPlay.info?.title || 'Unknown'}" [${this._formatDuration(trackToPlay.info?.length)}]`);
-
-            try {
-                await player.playTrack({ track: { encoded: trackToPlay.encoded } });
-                return; // Success — exit the loop
-            } catch (error) {
-                log.error(`[${guildId}] 💥 PLAY FAILED: "${trackToPlay.info?.title}" — ${error.message}`);
-                consecutiveFailures++;
-                continue;
-            }
-        }
-
-        // Exhausted retries
-        log.error(`[${guildId}] ❌ Max consecutive failures (${MAX_SKIP_RETRIES}) reached — stopping player`);
-        this.currentTracks.delete(guildId);
-        this.playerStates.delete(guildId);
-        this._prefetchCache.delete(guildId);
-        player.stopTrack();
+            this.changed(id);
+            if (action !== 'clear') void this.prefetchNext(id);
+            return true;
+        });
     }
-
-    async skip(guildId) {
-        const player = this.shoukaku.players.get(guildId);
-        if (!player) return false;
-
-        const track = this.currentTracks.get(guildId);
-        log.info(`[${guildId}] ⏭ SKIP requested: "${track?.info?.title || 'Unknown'}"`);
-
-        // Stop current track, then explicitly advance
-        // ('stopped' end events are filtered, so we must call playNext ourselves)
-        await player.stopTrack();
-        await this.playNext(guildId);
-        return true;
+    async volume(id, value) {
+        integer(value, 0, 100, 'Volume');
+        return this.serial.run(id, async () => {
+            const player = this.shoukaku.players.get(id);
+            if (player) await player.update({ volume: value, paused: this.playerStates.get(id)?.paused || false }, true);
+            await this.database.upsertGuildSettings(id, { volume: value });
+            this.options.set(id, { ...(this.options.get(id) || { filter: 'reset' }), volume: value });
+            this.changed(id);
+            return true;
+        });
     }
-
-    async stop(guildId) {
-        const player = this.shoukaku.players.get(guildId);
-        if (!player) return false;
-
-        const track = this.currentTracks.get(guildId);
-        log.info(`[${guildId}] ⏹ STOP requested: "${track?.info?.title || 'Unknown'}" — clearing queue & leaving`);
-
-        await QueueService.clear(guildId);
-        this.currentTracks.delete(guildId);
-        this.playerStates.delete(guildId);
-        this._prefetchCache.delete(guildId);
-        await player.stopTrack();
-        this.shoukaku.leaveVoiceChannel(guildId);
-        return true;
-    }
-
-    async pause(guildId, state = true) {
-        const player = this.shoukaku.players.get(guildId);
-        if (!player) return false;
-        await player.setPaused(state);
-
-        const track = this.currentTracks.get(guildId);
-        log.info(`[${guildId}] ${state ? '⏸ PAUSED' : '▶ RESUMED'}: "${track?.info?.title || 'Unknown'}"`);
-
-        // Track paused state for progress interpolation
-        const existing = this.playerStates.get(guildId);
-        if (existing) {
-            if (state) {
-                // Pausing: freeze position at current interpolated value
-                const elapsed = Date.now() - (existing.timestamp || Date.now());
-                existing.position = Math.min(existing.position + elapsed, existing.duration || Infinity);
-            }
-            existing.paused = state;
-            existing.timestamp = Date.now();
-            this.playerStates.set(guildId, existing);
-        }
-
-        return true;
+    async filter(id, preset) {
+        if (!Object.hasOwn(FILTERS, preset)) fail('Unknown filter');
+        return this.serial.run(id, async () => {
+            const player = this.shoukaku.players.get(id);
+            if (!player) fail('Nothing is playing', 409);
+            const position = this.getPlayerState(id)?.position;
+            await player.update({ filters: { volume: 1, equalizer: [], karaoke: null, timescale: null, tremolo: null,
+                vibrato: null, rotation: null, distortion: null, channelMix: null, lowPass: null, ...FILTERS[preset] },
+                paused: this.playerStates.get(id)?.paused || false }, true);
+            const state = this.playerStates.get(id);
+            if (state && position !== undefined) Object.assign(state, { position, timestamp: Date.now() });
+            this.options.set(id, { ...(this.options.get(id) || { volume: 100 }), filter: preset });
+            this.changed(id);
+            return true;
+        });
     }
 }
-
-export default PlayerController;

@@ -1,25 +1,15 @@
 import passport from 'passport';
 import { Strategy as DiscordStrategy } from 'passport-discord';
-import { config } from '../config/env.js';
+import { config } from './env.js';
 
-passport.serializeUser((user, done) => {
-    done(null, user);
-});
-
-passport.deserializeUser((obj, done) => {
-    done(null, obj);
-});
-
-passport.use(new DiscordStrategy({
-    clientID: config.discord.clientId,
-    clientSecret: config.discord.clientSecret,
-    callbackURL: process.env.CALLBACK_URL || 'http://localhost:3000/auth/discord/callback',
-    scope: ['identify', 'guilds']
-},
-    (accessToken, refreshToken, profile, done) => {
-        process.nextTick(() => {
-            return done(null, profile);
-        });
-    }));
-
+export function configurePassport() {
+    passport.serializeUser((user,done) => done(null,{id:user.id,username:user.username,avatar:user.avatar,discriminator:user.discriminator}));
+    passport.deserializeUser((user,done) => done(null,user));
+    passport.use(new DiscordStrategy({
+        clientID:config.discord.clientId,clientSecret:config.discord.clientSecret,
+        callbackURL:process.env.CALLBACK_URL || config.frontendUrl + '/auth/discord/callback',
+        scope:['identify','guilds'],state:true
+    },(_accessToken,_refreshToken,profile,done) => done(null,profile)));
+    return passport;
+}
 export default passport;

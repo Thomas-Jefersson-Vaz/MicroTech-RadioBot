@@ -1,452 +1,101 @@
-# youtube-source
-A rewritten YouTube source manager for Lavaplayer.
+# MikroTech Radio V3
 
-This source aims to provide robustness by leveraging multiple InnerTube clients
-for requests. Where one client fails, another will try to load the request.
-Which clients are used is entirely configurable.
+Discord music bot and web dashboard using Node.js/Express, Discord.js, Shoukaku, NodeLink, Redis, PostgreSQL 16 and Next.js 16.
 
-## Table of Contents
-- [Common](#common)
-  - Information about the `common` module and usage of.
-- [V2](#v2)
-  - Information about the `v2` module and usage of.
-- [Plugin](#plugin)
-  - Information about the `plugin` module and usage of.
-- [Available Clients](#available-clients)
-  - Information about the clients provided by `youtube-source`, as well as their advantages/disadvantages.
-- [Using OAuth tokens](#using-oauth-tokens)
-  - Information on using OAuth tokens with `youtube-source`.
-- [Using a poToken](#using-a-potoken)
-  - Information on using a `poToken` with `youtube-source`.
-- [Using a remote cipher server](#using-a-remote-cipher-server)
-  - Information on using a remote cipher server with `youtube-source`.
-- [REST Routes (`plugin` only)](#rest-routes-plugin-only)
-  - Information on the REST routes provided by the `youtube-source` plugin module.
-- [Migration Information](#migration-from-lavaplayers-built-in-youtube-source)
-  - Information on migrating from Lavaplayer's built-in Youtube source manager.
-- [Additional Support](#additional-support)
-  - For everything else.
+This repository implements the V2 migration: music controls, private playlists, playback history, guild XP/rank, mention-triggered Gemini/Groq chat with immediate music actions, and a live dashboard. Playback improvements are implemented; the HomeLab audible soak remains a release gate.
 
-## common
-This module provides the base source manager, which can be used with any
-`com.sedmelluq.discord.lavaplayer` packages still on major version `1`.
+## Features
 
-<details>
-<summary>Using in Gradle:</summary>
+- Songs, searches, playlists, multiple queries separated by `&&`, and trailing `-s` / `-r` flags.
+- Pause/resume, skip, stop, volume, clear, shuffle, jump, queue reordering, and reset/bassboost/nightcore/vaporwave filters.
+- Private playlists with create/list/show/add/remove/delete/load.
+- PostgreSQL history and guild XP: up to 200 XP per eligible message, a 60-second per-user/guild cooldown, and level `floor(sqrt(xp / 100))`.
+- Gemini chat with Groq fallback when configured. Mention the bot to chat or request an allowlisted music action; no confirmation is required. Actions use the requester's live permissions.
+- Guild selection, live queue/progress, drag-to-reorder, playlists, history, rank/leaderboard, and administrator volume settings.
 
-```kotlin
-repositories {
-  // replace with https://maven.lavalink.dev/snapshots if you want to use a snapshot version.
-  maven(url = "https://maven.lavalink.dev/releases")
-}
+Read the generated [command reference](docs/commands.md), [API reference](docs/api.md), [verification record](docs/verification.md), and [playback validation checklist](docs/validation.md).
 
-dependencies {
-  // Replace VERSION with the current version as shown by the Releases tab or a long commit hash `-SNAPSHOT` for snapshots.
-  implementation("dev.lavalink.youtube:common:VERSION")
-}
+Spotify links resolve metadata through NodeLink and are matched to playable sources; this is not direct Spotify audio streaming. YouTube/SoundCloud playlist metadata uses yt-dlp with audio-engine fallback. Source availability depends on the provider and the deployment network.
+
+## Architecture
+
+The dashboard sends Discord OAuth, API requests and live WebSocket traffic through one gateway. A shared backend action service checks permissions for Discord commands, REST controls and AI music requests. Shoukaku controls NodeLink through its Lavalink-compatible API; Redis stores queues/sessions and PostgreSQL stores persistent application data.
+
+One backend process owns playback. Per-guild serialization and generation invalidation coordinate resolution, queue edits and track events. Prefetch is accepted only for the current queue head. Dashboard snapshots carry per-process guild revisions and resynchronize after reconnect.
+
+The V2 migration uses capped XP with a cooldown, NodeLink instead of the former Lavalink container, structured allowlisted AI actions and environment-driven configuration. History records confirmed track starts. The remaining HomeLab release gates are documented in [validation](docs/validation.md).
+
+## Local setup
+
+Requires Node.js 24, Docker Compose and a Discord application.
+
+1. Copy `example.env` to `.env`. Supply Discord credentials, a random session secret of at least 32 characters, database password and NodeLink password.
+2. Enable the Discord **Message Content** intent for XP and AI chat. Invite the bot with `bot` and `applications.commands` scopes and View Channel, Send Messages, Connect and Speak permissions.
+3. Add `CALLBACK_URL` to the Discord application's OAuth redirect URLs. The default is `http://localhost:3001/auth/discord/callback`.
+4. Full containers: `docker compose up -d --build`, or run `start.bat`.
+5. Hybrid development: run `start-local.bat`; infrastructure stays in containers, backend/dashboard run locally.
+
+Default dashboard: http://localhost:3001. Backend diagnostics: http://localhost:3000/health. All browser API, OAuth and WebSocket traffic passes through the dashboard gateway. Database, Redis, backend diagnostics and NodeLink published ports bind to loopback by default.
+
+Set `GUILD_ID` for a test server's command registration; leave blank for global registration. Global and guild registrations are separate Discord scopes: old registrations in another scope are not automatically deleted.
+
+## Portainer on the HomeLab
+
+Use **Docker Standalone**, not Swarm, for these manifests.
+
+Build the backend, frontend and NodeLink wrapper images from this checkout on a Docker host, tag them in your registry, and push them using your existing registry credentials. Deploy [docker-compose.portainer.yml](docker-compose.portainer.yml) using Portainer's stack editor or Git integration and set:
+
+- `BACKEND_IMAGE`, `FRONTEND_IMAGE`, `NODELINK_IMAGE`: the built release image references, preferably immutable digests.
+- The required application variables from `example.env`.
+- `FRONTEND_URL=https://your-dashboard-host`, `CALLBACK_URL=https://your-dashboard-host/auth/discord/callback`, `COOKIE_SECURE=true`.
+- `TRUST_PROXY=1` for the included gateway; expose the dashboard behind your HTTPS reverse proxy with WebSocket upgrades enabled.
+- `BUILD_REVISION` to the release commit.
+
+Build commands:
+
+```sh
+docker build -t YOUR_REGISTRY/mikrotech-backend:RELEASE ./backend
+docker build -t YOUR_REGISTRY/mikrotech-frontend:RELEASE ./frontend
+docker build -t YOUR_REGISTRY/mikrotech-nodelink:RELEASE ./infrastructure/nodelink
 ```
 
-</details>
-Example usage:
+The NodeLink wrapper adapts the pinned base image's own configuration using environment variables, enables player/statistics updates, and suppresses request-body/header logging. It does not require a host-mounted config file or a `stack.env` file. The local Compose manifest builds the same images.
 
-```java
-YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager();
-// Optionally, you may instantiate the source with a custom options, such as toggling use of searching, and clients.
-YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(/*allowSearch:*/ true, new Client[] { new Music(), new Web(), new AndroidTestsuite() });
+Keep the existing Portainer stack name and PostgreSQL/Redis volumes. Back up data before the first migration. Do not recreate the database volume or use `down -v`. Existing volume credentials must match their original PostgreSQL initialization values.
+
+## Configuration
+
+`example.env` is the canonical configuration list. Docker/Portainer inject variables directly; hybrid development loads the root `.env`. `NODELINK_URL` selects the audio endpoint; legacy `LAVALINK_URL` and password variables remain accepted for compatibility.
+
+AI is disabled until a provider key and explicit model are supplied: `GEMINI_API_KEY` + `GEMINI_MODEL`, and/or `GROQ_API_KEY` + `GROQ_MODEL`. Choose currently available models for your account. Conversation memory is scoped by user and guild, limited to 20 turns, expires after 30 days, and can be cleared with `/memory-clear` or the dashboard.
+
+## Permissions and persistence
+
+Guild members may read their server's queue/history/rank. Music controls require sharing the bot's voice channel, with an administrator override. Playlists are private to their owner. Membership is refreshed before protected actions.
+
+Redis stores queues and login sessions; Compose enables append-only persistence. PostgreSQL stores history, playlists, XP, guild settings and AI memory. Ordered, additive migrations run transactionally at startup. Active playback is owned by one backend process; backend restart preserves upcoming tracks but does not promise restoration of the current track.
+
+## Checks and troubleshooting
+
+```sh
+cd backend
+npm ci
+npm test
+npm run docs:commands -- --check
+npm run test:integration
+cd ../frontend
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+npx playwright install chromium
+npm run test:browser
 ```
 
-You may also extend the `Client` interface to support additional InnerTube clients. There are a few abstract classes to
-make this easier, notably, `MusicClient` (for `music.youtube.com` InnerTube clients), `NonMusicClient` (for youtube.com
-innertube clients) and `StreamingNonMusicClient` (for clients that can be used to stream videos).
+Real-service integration tests require `TEST_PG_URL` and `TEST_REDIS_URL` pointing to an isolated test environment; they skip when unset. CI provides PostgreSQL/Redis and builds/smoke-tests the images.
 
-Support for IP rotation has been included, and can be achieved using the following:
-```java
-AbstractRoutePlanner routePlanner = new ...
-YoutubeIpRotatorSetup rotator = new YoutubeIpRotatorSetup(routePlanner);
+`/ready` returns 503 until Discord, Redis, PostgreSQL, command verification and an audio node are available. Registration verifies names and option definitions; failed registration remains visible and retries every minute. Commands receive an explicit unavailable response while dependencies are down.
 
-// 'youtube' is the variable holding your YoutubeAudioSourceManager instance.
-rotator.forConfiguration(youtube.getHttpInterfaceManager(), false)
-    .withMainDelegateFilter(youtube.getContextFilter()) // IMPORTANT
-    .setup();
-```
+Resume can reconnect after a voice disconnect or start the persisted upcoming queue after a backend restart. Changing filters or volume preserves pause state.
 
-## v2
-This modules expands on `common` by providing additional support for
-Lavaplayer `2.x` clients, such as [Lavalink-Devs/Lavaplayer](https://github.com/lavalink-devs/lavaplayer).
-Such features currently include thumbnail support within `AudioTrackInfo`.
-Additional clients are included that provide access to this additional information.
-These clients are suffixed with `Thumbnail`, such as `WebWithThumbnail`, `AndroidWithThumbnail` etc.
-
-<details>
-<summary>Using in Gradle:</summary>
-
-```kotlin
-repositories {
-  // replace with https://maven.lavalink.dev/snapshots if you want to use a snapshot version.
-  maven(url = "https://maven.lavalink.dev/releases")
-}
-
-dependencies {
-  // Replace VERSION with the current version as shown by the Releases tab or a long commit hash `-SNAPSHOT` for snapshots.
-  implementation("dev.lavalink.youtube:v2:VERSION")
-}
-```
-
-</details>
-
-Example usage:
-```java
-// same as the 'common' module but there are additional clients that provide video thumbnails in the returned metadata.
-YoutubeAudioSourceManager youtube = new YoutubeAudioSourceManager(/*allowSearch:*/ true, new Client[] { new MusicWithThumbnail(), new WebWithThumbnail(), new AndroidTestsuiteWithThumbnail() });
-```
-
-## plugin
-This module serves as the plugin for use with [Lavalink](https://github.com/lavalink-devs/Lavalink).
-
-To use this plugin with Lavalink, you must declare the dependency.
-
-<details>
-<summary>Using with Lavalink v3:</summary>
-
-```yaml
-lavalink:
-  plugins:
-    # Replace VERSION with the current version as shown by the Releases tab or a long commit hash for snapshots.
-    - dependency: "dev.lavalink.youtube:youtube-plugin:VERSION"
-      repository: "https://maven.lavalink.dev/releases" # use https://maven.lavalink.dev/snapshots if you want to use a snapshot version.
-```
-
-</details>
-
-<details>
-<summary>Using with Lavalink v4:</summary>
-
-```yaml
-lavalink:
-  plugins:
-    # Replace VERSION with the current version as shown by the Releases tab or a long commit hash for snapshots.
-    - dependency: "dev.lavalink.youtube:youtube-plugin:VERSION"
-      snapshot: false # Set to true if you want to use a snapshot version.
-```
-
-</details>
-
-Configuring the plugin:
-> [!IMPORTANT]
-> You must make sure to disable the built-in YouTube source like so:
-```yaml
-lavalink:
-  server:
-    sources:
-      youtube: false
-```
-
-> [!NOTE]
-> Existing options, such as `ratelimit` and `youtubePlaylistLoadLimit` will be picked up automatically by the plugin,
-> so these don't need changing.
-> 
-```yaml
-plugins:
-  youtube:
-    enabled: true # Whether this source can be used.
-    allowSearch: true # Whether "ytsearch:" and "ytmsearch:" can be used.
-    allowDirectVideoIds: true # Whether just video IDs can match. If false, only complete URLs will be loaded.
-    allowDirectPlaylistIds: true # Whether just playlist IDs can match. If false, only complete URLs will be loaded.
-    # The clients to use for track loading. See below for a list of valid clients.
-    # Clients are queried in the order they are given (so the first client is queried first and so on...)
-    clients:
-      - MUSIC
-      - ANDROID_VR
-      - WEB
-      - WEBEMBEDDED 
-```
-
-### Advanced Options
-```yaml
-    # The below section of the config allows setting specific options for each client, such as the requests they will handle.
-    # If an option, or client, is unspecified, then the default option value/client values will be used instead.
-    # If a client is configured, but is not registered above, the options for that client will be ignored.
-    # WARNING!: THE BELOW CONFIG IS FOR ILLUSTRATION PURPOSES. DO NOT COPY OR USE THIS WITHOUT
-    # WARNING!: UNDERSTANDING WHAT IT DOES. MISCONFIGURATION WILL HINDER YOUTUBE-SOURCE'S ABILITY TO WORK PROPERLY.
-
-    # Write the names of clients as they are specified under the heading "Available Clients".
-    clientOptions:
-      WEB:
-        # Example: Disabling a client's playback capabilities.
-        playback: false
-        videoLoading: false # Disables loading of videos for this client. A client may still be used for playback even if this is set to 'false'.
-      WEBEMBEDDED:
-        # Example: Configuring a client to exclusively be used for video loading and playback.
-        playlistLoading: false # Disables loading of playlists and mixes.
-        searching: false # Disables the ability to search for videos.
-```
-
-## Available Clients
-Currently, the following clients are available for use:
-
-| Identifier        | Opus Formats | OAuth | Age-restriction Support | Playback Support | Metadata Support              | Additional Notes                                     |
-|-------------------|--------------|-------|-------------------------|------------------|-------------------------------|------------------------------------------------------|
-| `MUSIC`           | No           | No    | No                      | No               | Search                        | YouTube music search support via `ytmsearch:` prefix |
-| `WEB`             | Yes          | No    | No                      | Yes + Livestream | Video, Search, Playlist, Mix  |                                                      |
-| `MWEB`            | Yes          | No    | No                      | Yes + Livestream | Video, Search, Playlist, Mix  |                                                      |
-| `WEBEMBEDDED`     | Yes          | No    | Limited                 | Yes + Livestream | Video                         |                                                      |
-| `ANDROID`         | Yes          | No    | No                      | Yes + Livestream | Video, Search, Playlist, Mix  | Heavily restricted, frequently dysfunctional         |
-| `ANDROID_MUSIC`   | Yes          | No    | No                      | Yes              | Video, Search, Mix            |                                                      |
-| `ANDROID_VR`      | Yes          | No    | No                      | Yes + Livestream | Video, Search, Playlist, Mix  |                                                      |
-| `IOS`             | No           | No    | No                      | Yes + Livestream | Video, Search, Playlist, Mix  |                                                      |
-| `TV`              | Yes          | Yes   | With OAuth              | Yes + Livestream | None                          | Playback requires sign-in                            |
-| `TVHTML5_SIMPLY`  | Yes          | No    | No                      | Yes + Livestream | Video, Search, Mix            |                                                      |
-
-> [!NOTE]
-> Clients that do not return Opus formats will require transcoding.
-> Livestreams do not yield Opus formats so will always require transcoding.
-
-
-## Using OAuth Tokens
-You may notice that some requests are flagged by YouTube, causing an error message asking you to sign in to confirm you're not a bot.
-With OAuth integration, you can request that `youtube-source` use your account credentials to appear as a normal user, with varying degrees
-of efficacy. **You do _not_ need to use `poToken` with OAuth.**
-
-> [!WARNING]
-> Similar to the `poToken` method, this is NOT a silver bullet solution, and worst case could get your account terminated!
-> For this reason, it is advised that **you use burner accounts and NOT your primary!**
-> This method may also trigger ratelimit errors if used in a high traffic environment.
-> USE WITH CAUTION!
-
-> [!NOTE]
-> You may need to set your log level for `dev.lavalink.youtube.http.YoutubeOauth2Handler` to `INFO`, to see additional information
-> within your terminal regarding completing the OAuth flow.
-
-> [!NOTE]
-> If you do not have a refresh token, then do not supply one. The source will output your refresh token into your terminal upon
-> successfully completing the OAuth flow at least **once**. If you do not see your token, you may need to configure your
-> logging (see above note).
-
-You can instruct `youtube-source` to use OAuth with the following:
-
-### Lavaplayer
-```java
-YoutubeAudioSourceManager source = new YoutubeAudioSourceManager();
-// This will trigger an OAuth flow, where you will be instructed to head to YouTube's OAuth page and input a code.
-// This is safe, as it only uses YouTube's official OAuth flow. No tokens are seen or stored by us.
-source.useOauth2(null, false);
-
-// If you already have a refresh token, you can instruct the source to use it, skipping the OAuth flow entirely.
-// You can also set the `skipInitialization` parameter, which skips the OAuth flow. This should only be used
-// if you intend to supply a refresh token later on. You **must** either complete the OAuth flow or supply
-// a refresh token for OAuth integration to work.
-source.useOauth2("your refresh token", true);
-```
-
-### Lavalink
-```yaml
-plugins:
-  youtube:
-    enabled: true
-    oauth:
-      # setting "enabled: true" is the bare minimum to get OAuth working.
-      enabled: true
-
-      # if you have a refresh token, you may set it below (make sure to uncomment the line to apply it).
-      # setting a valid refresh token will skip the OAuth flow entirely. See above note on how to retrieve
-      # your refreshToken.
-      # refreshToken: "paste your refresh token here if applicable"
-
-      # Set this if you don't want the OAuth flow to be triggered, if you intend to supply a refresh token later.
-      # Initialization is skipped automatically if a valid refresh token is supplied. Leave this commented if you're
-      # completing the OAuth flow for the first time/do not have a refresh token.
-      # skipInitialization: true
-```
-
-### Passing an oauth token from your client
-Another option to use oauth is by using oauth access tokens that are managed from your client. In this case your 
-bot/client provides LavaLink with the token to use when playing a track. To do this simply add the oauth access token 
-to a track's [userData](https://lavalink.dev/api/rest#track) field in a json format when updating the player to 
-play a track like:
-```json
-{
-  "oauth-token": "access token to use"
-}
-```
-
-## Using a `poToken`
-A `poToken`, also known as a "Proof of Origin Token" is a way to identify what requests originate from.
-In YouTube's case, this is sent as a JavaScript challenge that browsers must evaluate, and send back the resolved
-string. Typically, this challenge would remain unsolved for bots as more often than not, they don't simulate an entire
-browser environment, instead only evaluating the minimum amount of JS required to do its job. Therefore, it's a reasonable
-assumption that if the challenge is not fulfilled, the request origin is a bot.
-
-To obtain a `poToken`, you can use https://github.com/iv-org/youtube-trusted-session-generator, by running the Python script
-or the docker image. Both methods will print a `poToken` after a successful run, which you can supply to `youtube-source`
-to try and work around having automated requests blocked.
-
-
-> [!NOTE]
-> A `poToken` is not a silver bullet, and currently it only applies to requests made via the `WEB` & `WEBEMBEDDED` client.
-> You do not need to specify a `poToken` if using OAuth, and vice versa.
-
-Specifying the token is as simple as doing:
-
-### Lavaplayer
-```java
-// Web is dev.lavalink.youtube.clients.Web
-Web.setPoTokenAndVisitorData("your po_token", "your visitor_data");
-```
-
-### Lavalink
-```yaml
-plugins:
-  youtube:
-    pot:
-      token: "paste your po_token here"
-      visitorData: "paste your visitor_data here"
-```
-
-## Using a remote cipher server
-
-It becomes harder and harder to keep up with YouTube's cipher changes, as they become more frequent and complex.
-To help with this, you can use a remote cipher server to handle signature deciphering for you.
-You can use [yt-cipher](https://github.com/kikkia/yt-cipher), which is a simple Deno server that exposes a REST API for deciphering signatures.
-Check out the repository for more information on how to set it up.
-
-If you want to implement your own, you can follow the [yt-cipher API specification](https://github.com/kikkia/yt-cipher#api-specification).
-
-### Lavaplayer
-```java
-YoutubeSourceOptions options = new YoutubeSourceOptions()
-     // The base URL of your remote cipher server & the password to authenticate with your remote cipher server, along with an identifier for metrics.
-    .setRemoteCipher("http://localhost:8001", "your_secret_password", "user agent");
-YoutubeAudioSourceManager sourceManager = new YoutubeAudioSourceManager(options, ...);
-```
-
-### Lavalink
-```yaml
-plugins:
-  youtube:
-    remoteCipher:
-      url: "http://localhost:8001" # The base URL of your remote cipher server.
-      password: "your_secret_password" # The password to authenticate with your remote cipher server.
-      userAgent: "your_service_name" # Optional user-agent header, used for metrics on the backend. 
-```
-
-## REST routes (`plugin` only)
-### `POST` `/youtube`
-
-Body:
-
-> [!NOTE]
-> You do not need to provide everything as it is shown.
-> For example, you can specify just `refreshToken` and `skipInitialization`, or just `poToken` and `visitorData`.
-> You do **not** need to use `poToken` with OAuth and vice versa.
-
-```json
-{
-  "refreshToken": "your new refresh token",
-  "skipInitialization": true,
-  "poToken": "your po_token",
-  "visitorData": "your visitor_data"
-}
-```
-
-Response:
-
-If the YouTube source is not enabled, or the `refreshToken` is invalid:
-`500 - Internal Server Error`
-
-Otherwise:
-`204 - No Content`
-
-### `GET` `/youtube`
-
-Response:
-
-If the YouTube source is not enabled:
-`500 - Internal Server Error`
-
-Otherwise:
-```json
-{
-  "refreshToken": "your current refresh token, or null"
-}
-```
-
-### `GET` `/youtube/stream/{videoId}`
-
-Query parameters:
-
-| Key          | Value Type | Required | Notes                                                                                                                                                                       |
-|--------------|------------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| itag         | integer    | No       | The [itag](https://gist.github.com/AgentOak/34d47c65b1d28829bb17c24c04a0096f) of the desired format. If unspecified, youtube-source's default format selector will be used. |
-| withClient   | string     | No       | The identifier of the client to use for streaming. Uses all clients if unspecified.                                                                                         |
-
-Response:
-
-If `videoId` could not be found or loaded, or the `itag` does not exist, or if no client supports format loading:
-`400 - Bad Request`
-
-Otherwise:
-`200 - OK` accompanied by the selected format stream (audio or video). `Content-Type` header will be set appropriately.
-
-### `GET` `/youtube/oauth/{refreshToken}`
-
-Response:
-
-If the `refreshToken` is invalid, expired, or cannot be processed:
-`500 - Internal Server Error`
-
-If the refresh process succeeds and a new access token is generated:
-`200 - OK` accompanied by the new access token in JSON format.
-
-Example response:
-```json
-{
-  "access_token": "AccessToken",
-  "expires_in": 69420,
-  "scope": "used scope",
-  "token_type": "type"
-}
-```
-
-
-
-## Migration from Lavaplayer's built-in YouTube source
-
-This client is intended as a direct replacement for Lavaplayer's built-in `YoutubeAudioSourceManager`,
-which has been deprecated in a recent release of [Lavalink-Devs/Lavaplayer](https://github.com/lavalink-devs/lavaplayer).
-
-When using `AudioSourceManagers.registerRemoteSources(AudioPlayerManager)`, Lavaplayer will register its own
-deprecated `YoutubeAudioSourceManager`, which must be disabled.
-Some versions of Lavaplayer may include an optional `excludeSources` parameter, allowing you to toggle the adding of the source.
-If the version you are using does not support this, you will need to manually register each `AudioSourceManager` yourself.
-
-First, create and register an instance of the supported `YoutubeAudioSourceManager` from the `youtube-source` package.
-```java
-AudioPlayerManager playerManager = new DefaultAudioPlayerManager();
-YoutubeAudioSourceManager ytSourceManager = new dev.lavalink.youtube.YoutubeAudioSourceManager();
-playerManager.registerSourceManager(ytSourceManager);
-```
-
-If your version of Lavaplayer supports an `excludeSources` parameter or equivalent, you may exclude the built-in
-`YoutubeAudioSourceManager` using the following:
-```java
-AudioSourceManagers.registerRemoteSources(playerManager,
-                                          com.sedmelluq.discord.lavaplayer.source.youtube.YoutubeAudioSourceManager.class);
-```
-
-Otherwise, you will need to register each source manager individually.
-
-In addition, there are a few significant changes to note:
-
-- This source's class structure differs so if you had custom classes that you were initialising
-  the source manager with (e.g. an overridden `YoutubeTrackDetailsLoader`), this **is not** compatible
-  with this source manager.
-
-## Versioning Policy
-This project follows [Semantic Versioning](https://semver.org/), except in the case of [client](#available-clients) removal.
-Typically, clients are not removed unless there is good reason, such as being deprecated, irreparably broken or removed from YouTube's client lifecycle.
-In such scenarios, we anticipate that you have ceased usage of such clients prior to their removal, so do not expect any code breakage,
-however we advise that you periodically check and keep your client list up to date due to this.
-
-## Additional Support
-If you need additional help with using this source, that's not covered here or in any of the issues, 
-[join our Discord server](https://discord.gg/ZW4s47Ppw4).
+For stuttering or early endings, capture the evidence described in [validation](docs/validation.md). Recovery delays now use Shoukaku's seconds-based settings correctly. Queue edits invalidate prefetch, terminal events advance once, and stop invalidates pending resolution. These fixes do not establish the root cause of a server-side audible failure without correlated logs and listening tests.

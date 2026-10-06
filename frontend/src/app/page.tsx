@@ -1,233 +1,197 @@
 'use client';
+import {useCallback,useEffect,useRef,useState} from 'react';
+import * as api from '@/lib/api';
+import {Guild,QueueResponse,Playlist,HistoryItem,Rank} from '@/lib/types';
+import {useAuth} from '@/lib/auth';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { fetchQueue, controlPlayer } from '@/lib/api';
-import { Track, PlayerState } from '@/lib/types';
-import { useAuth } from '@/lib/auth';
-
-// Mock Guild ID for demo purposes
-const DEMO_GUILD_ID = '527032095297372162';
+const duration=(milliseconds:number) => {
+    const total=Math.max(0,Math.floor(milliseconds/1000));
+    return Math.floor(total/60)+':'+String(total%60).padStart(2,'0');
+};
+const message=(error:unknown) => error instanceof Error ? error.message : 'Request failed';
 
 export default function Home() {
-  const { user, login, logout } = useAuth();
-  const [queue, setQueue] = useState<Track[]>([]);
-  const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
-  const [playerState, setPlayerState] = useState<PlayerState | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+    const auth=useAuth();
+    const [guilds,setGuilds]=useState<Guild[]>([]);
+    const [guildId,setGuildId]=useState('');
+    const [snapshot,setSnapshot]=useState<QueueResponse|null>(null);
+    const [connected,setConnected]=useState(false);
+    const [busy,setBusy]=useState(false);
+    const [error,setError]=useState<string|null>(null);
+    const [notice,setNotice]=useState('');
+    const [query,setQuery]=useState('');
+    const [volume,setVolume]=useState(100);
+    const [history,setHistory]=useState<HistoryItem[]>([]);
+    const [rank,setRank]=useState<Rank|null>(null);
+    const [leaders,setLeaders]=useState<Rank[]>([]);
+    const [playlists,setPlaylists]=useState<Playlist[]>([]);
+    const [playlist,setPlaylist]=useState<Playlist|null>(null);
+    const [playlistName,setPlaylistName]=useState('');
+    const [trackUrl,setTrackUrl]=useState('');
+    const [trackTitle,setTrackTitle]=useState('');
+    const [position,setPosition]=useState(0);
+    const anchor=useRef<{snapshot:QueueResponse;received:number}|null>(null);
+    const dragged=useRef<string|null>(null);
+    const activeGuild=guilds.find(guild => guild.id === guildId);
+    const disabled=busy || !connected;
+    const refreshPlaylists=useCallback(async () => {
+        const data=await api.listPlaylists();setPlaylists(data.playlists);
+    },[]);
+    const run=async (operation:()=>Promise<unknown>,success='Saved') => {
+        setBusy(true);setError(null);setNotice('');
+        try {await operation();setNotice(success);}
+        catch(error) {setError(message(error));}
+        finally {setBusy(false);}
+    };
+    const act=(action:string,args:unknown={}) => run(() => api.controlPlayer(guildId,action,args),'Completed: '+action);
 
-  // For smooth progress interpolation between polls
-  const [displayPosition, setDisplayPosition] = useState(0);
-  const lastUpdateRef = useRef<{ position: number; timestamp: number; paused: boolean } | null>(null);
-  const animationFrameRef = useRef<number>(0);
+    useEffect(() => {
+        if(!auth.user) return;
+        let cancelled=false;
+        api.fetchGuilds().then(data => {
+            if(cancelled) return;
+            setGuilds(data.guilds);
+            const saved=localStorage.getItem('mikrotech.guild');
+            setGuildId(data.guilds.some(g => g.id === saved) ? saved! : data.guilds[0]?.id || '');
+        }).catch(error => {if(!cancelled)setError(message(error));});
+        api.listPlaylists().then(data => {if(!cancelled)setPlaylists(data.playlists);}).catch(error => {if(!cancelled)setError(message(error));});
+        return () => {cancelled=true;};
+    },[auth.user,refreshPlaylists]);
 
-  const loadQueue = async () => {
-    try {
-      const data = await fetchQueue(DEMO_GUILD_ID);
-      // API now returns { queue: [], current: ..., playerState: ... }
-      if (Array.isArray(data)) {
-        setQueue(data);
-      } else {
-        setQueue(data.queue || []);
-        setCurrentTrack(data.current || null);
-        setPlayerState(data.playerState || null);
+    useEffect(() => {
+        if(!auth.user || !guildId) return;
+        let cancelled=false;
+        let socket:WebSocket|undefined;
+        let retry:ReturnType<typeof setTimeout>|undefined;
+        let revision=-1;
+        const receive=(data:QueueResponse) => {
+            if(cancelled || data.guildId !== guildId || data.revision < revision) return;
+            revision=data.revision;
+            setSnapshot(data);
+            if(anchor.current?.snapshot.settings.volume !== data.settings.volume)setVolume(data.settings.volume);
+            anchor.current={snapshot:data,received:Date.now()};
+        };
+        const connect=() => {
+            if(cancelled) return;
+            revision=-1;
+            let received=false;
+            socket=new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://')+location.host+'/api/live?guildId='+guildId);
+            socket.onmessage=event => {
+                if(cancelled) return;
+                try {receive(JSON.parse(event.data));setConnected(true);if(!received)setError(null);received=true;}
+                catch {setError('Invalid live update');socket?.close();}
+            };
+            socket.onclose=() => {if(cancelled)return;setConnected(false);retry=setTimeout(connect,3000);};
+            socket.onerror=() => socket?.close();
+        };
+        localStorage.setItem('mikrotech.guild',guildId);
+        api.fetchQueue(guildId).then(receive).catch(error => {if(!cancelled)setError(message(error));});
+        connect();
+        const refresh=() => {
+            Promise.all([api.fetchHistory(guildId),api.fetchRank(guildId),api.fetchLeaderboard(guildId)]).then(([h,r,l]) => {
+                if(!cancelled){setHistory(h.history);setRank(r);setLeaders(l.leaderboard);}
+            }).catch(error => {if(!cancelled)setError(message(error));});
+        };
+        refresh();
+        const interval=setInterval(refresh,15000);
+        return () => {cancelled=true;clearTimeout(retry);clearInterval(interval);socket?.close();anchor.current=null;};
+    },[guildId,auth.user]);
 
-        // Update interpolation anchor point
-        if (data.playerState) {
-          lastUpdateRef.current = {
-            position: data.playerState.position,
-            timestamp: Date.now(),
-            paused: data.playerState.paused,
-          };
-        }
-      }
-    } catch (err) {
-      setError('Failed to load queue');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    useEffect(() => {
+        const timer=setInterval(() => {
+            const current=anchor.current;
+            if(!current?.snapshot.playerState) {setPosition(0);return;}
+            const state=current.snapshot.playerState;
+            const speed=current.snapshot.settings.filter === 'nightcore' ? 1.2 : current.snapshot.settings.filter === 'vaporwave' ? 0.85 : 1;
+            const elapsed=state.paused || !state.connected || !connected ? 0 : (Date.now()-current.received)*speed;
+            setPosition(Math.min(state.position+elapsed,state.duration || Infinity));
+        },250);
+        return () => clearInterval(timer);
+    },[connected]);
+    const selectGuild=(id:string) => {
+        setConnected(false);setSnapshot(null);setHistory([]);setRank(null);setLeaders([]);setGuildId(id);anchor.current=null;setError(null);
+    };
+    const selectPlaylist=async (id:number) => setPlaylist(await api.getPlaylist(id));
+    const track=snapshot?.current;
+    const state=snapshot?.playerState;
 
-  // Smooth progress animation via requestAnimationFrame
-  const animateProgress = useCallback(() => {
-    const ref = lastUpdateRef.current;
-    if (ref) {
-      if (ref.paused) {
-        setDisplayPosition(ref.position);
-      } else {
-        const elapsed = Date.now() - ref.timestamp;
-        setDisplayPosition(ref.position + elapsed);
-      }
-    }
-    animationFrameRef.current = requestAnimationFrame(animateProgress);
-  }, []);
-
-  useEffect(() => {
-    loadQueue();
-    const interval = setInterval(loadQueue, 5000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    animationFrameRef.current = requestAnimationFrame(animateProgress);
-    return () => cancelAnimationFrame(animationFrameRef.current);
-  }, [animateProgress]);
-
-  const handleControl = async (action: 'skip' | 'stop' | 'pause' | 'resume') => {
-    if (!user) return alert('Please login first');
-    try {
-      await controlPlayer(DEMO_GUILD_ID, action);
-      // Instant refresh
-      setTimeout(loadQueue, 500);
-    } catch (e: any) {
-      alert(e.message);
-    }
-  };
-
-  const duration = playerState?.duration || currentTrack?.info?.length || 0;
-  const progress = duration > 0 ? Math.min(displayPosition / duration, 1) : 0;
-  const isPaused = playerState?.paused ?? false;
-
-  return (
-    <div className="min-h-screen bg-gray-900 text-white p-8 font-sans">
-      <header className="mb-8 flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-pink-600">
-            MikroTech Radio
-          </h1>
-          <p className="text-gray-400">V3 Dashboard Prototype</p>
-        </div>
-        <div className="flex gap-4">
-          {user ? (
-            <div className="flex items-center gap-4">
-              <span className="text-gray-300">Hello, <b>{user.username}</b></span>
-              <button onClick={logout} className="px-4 py-2 bg-red-600 rounded hover:bg-red-700 transition font-medium">Logout</button>
-            </div>
-          ) : (
-            <button onClick={login} className="px-4 py-2 bg-indigo-600 rounded hover:bg-indigo-700 transition font-medium">Login with Discord</button>
-          )}
-        </div>
-      </header>
-
-      <main className="max-w-4xl mx-auto space-y-8">
-        {/* Now Playing Section */}
-        <section className="bg-gradient-to-br from-indigo-900 via-purple-900 to-gray-900 rounded-2xl p-8 shadow-2xl border border-indigo-500/30 glow-indigo">
-          <div className="flex flex-col md:flex-row items-center gap-8">
-            {currentTrack?.info?.artworkUrl ? (
-              <img src={currentTrack.info.artworkUrl} alt="Album Art" className="w-48 h-48 rounded-xl shadow-lg object-cover" />
-            ) : (
-              <div className="w-48 h-48 bg-gray-800 rounded-xl flex items-center justify-center shadow-lg">
-                <span className="text-4xl">🎵</span>
-              </div>
-            )}
-
-            <div className="flex-1 text-center md:text-left space-y-4">
-              <div className="space-y-2">
-                <h2 className="text-sm font-bold uppercase tracking-widest text-indigo-400">Now Playing</h2>
-                <h1 className="text-3xl md:text-4xl font-extrabold text-white leading-tight">
-                  {currentTrack ? currentTrack.info.title : 'No track playing'}
-                </h1>
-                <p className="text-xl text-gray-300 font-light">
-                  {currentTrack ? currentTrack.info.author : 'Queue up some tunes!'}
-                </p>
-              </div>
-
-              {currentTrack && (
-                <div className="space-y-2">
-                  {/* Real progress bar */}
-                  <div className="w-full bg-gray-800/50 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-gradient-to-r from-indigo-500 to-purple-500 h-full transition-none rounded-full"
-                      style={{ width: `${progress * 100}%` }}
-                    />
-                  </div>
-                  {/* Time display */}
-                  <div className="flex justify-between text-xs text-gray-400 font-mono">
-                    <span>{formatDuration(displayPosition)}</span>
-                    <span>
-                      {isPaused && (
-                        <span className="text-yellow-400 mr-2">⏸ Paused</span>
-                      )}
-                      {formatDuration(duration)}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {user && (
-          <section className="mb-8 flex flex-wrap gap-4 justify-center">
-            <button onClick={() => handleControl('resume')} className="px-6 py-3 bg-green-600 rounded-lg hover:bg-green-700 font-bold shadow-lg transition transform hover:scale-105">Play</button>
-            <button onClick={() => handleControl('pause')} className="px-6 py-3 bg-yellow-600 rounded-lg hover:bg-yellow-700 font-bold shadow-lg transition transform hover:scale-105">Pause</button>
-            <button onClick={() => handleControl('skip')} className="px-6 py-3 bg-blue-600 rounded-lg hover:bg-blue-700 font-bold shadow-lg transition transform hover:scale-105">Skip</button>
-            <button onClick={() => handleControl('stop')} className="px-6 py-3 bg-red-600 rounded-lg hover:bg-red-700 font-bold shadow-lg transition transform hover:scale-105">Stop</button>
-          </section>
-        )}
-
-        <section className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-xl font-semibold">Current Queue</h2>
-            <span className="text-sm bg-gray-700 px-3 py-1 rounded-full text-gray-300">
-              {queue.length} Tracks
-            </span>
-          </div>
-
-          {loading && queue.length === 0 ? (
-            <div className="text-center py-12 text-gray-500 animate-pulse">
-              Loading queue...
-            </div>
-          ) : error ? (
-            <div className="text-center py-12 text-red-400 bg-red-900/10 rounded-lg">
-              {error}
-            </div>
-          ) : queue.length === 0 ? (
-            <div className="text-center py-12 text-gray-500 border-2 border-dashed border-gray-700 rounded-lg">
-              Queue is empty. Add songs via Discord using <code>/play</code>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {queue.map((track, index) => (
-                <div
-                  key={index}
-                  className="flex items-center gap-4 bg-gray-700/50 p-4 rounded-lg hover:bg-gray-700 transition-colors group"
-                >
-                  <div className="flex-shrink-0 w-12 h-12 bg-gray-800 rounded flex items-center justify-center text-gray-500 font-mono text-lg">
-                    {index + 1}
-                  </div>
-                  <div className="flex-grow min-w-0">
-                    <h3 className="font-medium truncate text-gray-100 group-hover:text-purple-300 transition-colors">
-                      {track.info.title}
-                    </h3>
-                    <p className="text-sm text-gray-400 truncate">
-                      {track.info.author} • {formatDuration(track.info.length)}
-                    </p>
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    Requested by {track.requester?.username || 'Unknown'}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
-    </div>
-  );
-}
-
-function formatDuration(ms: number) {
-  if (!ms || ms <= 0) return '0:00';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const remainingMinutes = minutes % 60;
-  const remainingSeconds = seconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${remainingMinutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
-  }
-  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+    return <div className="shell">
+        <header><div><p className="eyebrow">YOUR SERVER. YOUR SOUND.</p><h1>MikroTech Radio</h1></div>
+            {auth.user ? <div className="account"><span>{auth.user.username}</span><button onClick={() => run(auth.logout,'Logged out')}>Log out</button></div>
+                : <button disabled={auth.loading} onClick={auth.login}>Login with Discord</button>}
+        </header>
+        {(error || auth.error) && <p role="alert" className="alert">{error || auth.error}</p>}
+        {notice && <p role="status" className="notice">{notice}</p>}
+        {auth.user && snapshot?.playbackError && <p role="alert" className="alert">{snapshot.playbackError}</p>}
+        {!auth.user ? <section className="panel"><h2>Music for your community</h2><p>Sign in to select a server, manage its queue, and see what is playing.</p></section> : <>
+            <div className="toolbar"><label>Server <select aria-label="Server" value={guildId} onChange={event => selectGuild(event.target.value)}>
+                {guilds.map(guild => <option key={guild.id} value={guild.id}>{guild.name}</option>)}
+            </select></label><span className={connected ? 'online' : 'offline'} role="status">{connected ? 'Live' : 'Connecting — controls paused'}</span></div>
+            {!guildId ? <section className="panel">No shared servers found. Invite the bot to your server, then sign in again.</section> : <>
+                <section className="now-playing panel">
+                    <div className="art">{/* Remote provider artwork varies; a regular image avoids a hostname allowlist. */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        {track?.info.artworkUrl ? <img src={track.info.artworkUrl} alt="Current track artwork"/> : <span>♫</span>}
+                    </div>
+                    <div className="track"><p className="eyebrow">NOW PLAYING</p><h2>{track?.info.title || 'Ready for your next song'}</h2><p>{track?.info.author || 'Add music below'}</p>
+                        <progress max={state?.duration || 1} value={Math.min(position,state?.duration || 0)} aria-label="Playback progress"/>
+                        <div className="times"><span>{duration(position)}</span><span>{state?.paused ? 'Paused · ' : ''}{track?.info.isStream ? 'Live stream' : duration(state?.duration || 0)}</span></div>
+                    </div>
+                </section>
+                <section className="panel"><form onSubmit={event => {event.preventDefault();void act('play',{query});}} className="search">
+                    <label className="grow">Add music<input required value={query} onChange={event => setQuery(event.target.value)} placeholder="Song, URL, or playlist · use && for multiple" maxLength={2000}/></label>
+                    <button disabled={disabled}>Add to queue</button>
+                </form><p className="muted">Join the bot’s voice channel to control music. Server administrators can override.</p>
+                    <div className="controls">
+                        <button disabled={disabled} onClick={() => act(state?.paused ? 'resume' : track ? 'pause' : 'resume')}>{state?.paused || !track ? 'Resume' : 'Pause'}</button>
+                        <button disabled={disabled} onClick={() => act('skip')}>Skip</button><button disabled={disabled} onClick={() => act('stop')}>Stop & leave</button>
+                        <label>Volume <input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={event => setVolume(Number(event.target.value))}/><span>{volume}%</span></label>
+                        <button disabled={disabled} onClick={() => act('volume',{value:volume})}>Apply volume</button>
+                        <label>Filter <select aria-label="Filter" disabled={disabled} value={snapshot?.settings.filter || 'reset'} onChange={event => act('filter',{preset:event.target.value})}>
+                            {['reset','bassboost','nightcore','vaporwave'].map(filter => <option key={filter}>{filter}</option>)}
+                        </select></label>
+                    </div>
+                </section>
+                <section className="panel"><div className="section-title"><h2>Up next <span className="badge">{snapshot?.queue.length || 0}</span></h2><div><button disabled={disabled} onClick={() => act('shuffle')}>Shuffle</button> <button disabled={disabled} onClick={() => act('clear')}>Clear queue</button></div></div>
+                    <p className="muted">Drag tracks to reorder. Jump starts a track and removes the entries before it.</p>
+                    {!snapshot?.queue.length && <p className="empty">Your queue is empty.</p>}
+                    <ol className="queue">{snapshot?.queue.map((entry,index) => <li key={entry.id || index} draggable={!disabled}
+                        onDragStart={() => {dragged.current=entry.id;}}
+                        onDragOver={event => event.preventDefault()}
+                        onDrop={event => {
+                            event.preventDefault();
+                            const from=snapshot.queue.findIndex(item => item.id === dragged.current)+1;
+                            dragged.current=null;
+                            if(from && from !== index+1) void act('move',{from,to:index+1});
+                        }}>
+                        <span className="number">{index+1}</span><div className="grow"><strong>{entry.info.title}</strong><small>{entry.info.author || 'Unknown artist'} · {duration(entry.info.length)} · {entry.requester?.username || 'Unknown requester'}</small></div>
+                        <button disabled={disabled} aria-label={'Jump to '+entry.info.title} onClick={() => act('jump',{position:index+1})}>Jump</button>
+                    </li>)}</ol>
+                </section>
+                <div className="columns"><section className="panel"><h2>Your playlists</h2>
+                    <form onSubmit={event => {event.preventDefault();void run(async () => {await api.createPlaylist(playlistName);setPlaylistName('');await refreshPlaylists();});}}>
+                        <label>Name<input required maxLength={100} value={playlistName} onChange={event => setPlaylistName(event.target.value)}/></label><button disabled={busy}>Create</button>
+                    </form>
+                    <div className="playlist-list">{playlists.map(item => <button key={item.id} disabled={busy} onClick={() => run(() => selectPlaylist(item.id),'Playlist opened')}>{item.name} ({item.count || 0})</button>)}</div>
+                    {playlist && <div><div className="section-title"><h3>{playlist.name}</h3><button disabled={busy} onClick={() => run(async () => {await api.deletePlaylist(playlist.id);setPlaylist(null);await refreshPlaylists();},'Playlist deleted')}>Delete</button></div>
+                        <button disabled={disabled} onClick={() => act('playlist-load',{id:playlist.id})}>Load into queue</button>
+                        <ol className="playlist-items">{playlist.items?.map(item => <li key={item.id}><a href={item.url} target="_blank" rel="noreferrer">{item.title}</a><button disabled={busy} onClick={() => run(async () => {await api.removePlaylistItem(playlist.id,item.position);await selectPlaylist(playlist.id);await refreshPlaylists();},'Track removed')}>Remove</button></li>)}</ol>
+                        <form onSubmit={event => {event.preventDefault();void run(async () => {await api.addPlaylistItem(playlist.id,trackUrl,trackTitle);setTrackUrl('');setTrackTitle('');await selectPlaylist(playlist.id);await refreshPlaylists();},'Track added');}}>
+                            <label>Track URL<input required type="url" value={trackUrl} onChange={event => setTrackUrl(event.target.value)}/></label>
+                            <label>Title<input value={trackTitle} onChange={event => setTrackTitle(event.target.value)} maxLength={300}/></label><button disabled={busy}>Save track</button>
+                        </form>
+                    </div>}
+                </section><section className="panel"><h2>Recently played</h2><ul className="history">{history.map((item,index) => <li key={item.played_at+index}><a href={item.url} target="_blank" rel="noreferrer">{item.title}</a><small>{new Date(item.played_at).toLocaleString()}</small></li>)}</ul>{!history.length && <p className="muted">No playback history yet.</p>}</section></div>
+                <div className="columns"><section className="panel"><h2>Server leaderboard</h2><p>Your level: {rank?.level || 0} · {rank?.xp || 0} XP · rank {rank?.rank || 'unranked'}</p>
+                    <ol className="history">{leaders.map(member => <li key={member.user_id}><strong>{member.user_id}</strong><small>Level {member.level} · {member.xp} XP</small></li>)}</ol>
+                </section><section className="panel"><h2>AI & settings</h2><p>Mention the bot in Discord to chat or request music actions. Your current voice-channel permissions apply.</p>
+                    <button disabled={busy} onClick={() => run(() => api.request('/api/memory/'+guildId+'/clear','POST'),'AI memory cleared')}>Clear my AI memory</button>
+                    {activeGuild?.admin && <form onSubmit={event => {event.preventDefault();void run(() => api.request('/api/settings/'+guildId,'POST',{volume}),'Default server volume saved');}}>
+                        <p>Administrator settings</p><label>Default volume<input type="number" min="0" max="100" value={volume} onChange={event => setVolume(Number(event.target.value))}/></label><button disabled={busy}>Save default volume</button>
+                    </form>}
+                </section></div>
+            </>}
+        </>}
+        <footer>MikroTech Radio · Discord commands and dashboard share the same player.</footer>
+    </div>;
 }

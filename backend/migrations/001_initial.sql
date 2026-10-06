@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS guild_settings (guild_id VARCHAR(32) PRIMARY KEY, volume_preferencial INT DEFAULT 100, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS guild_users (guild_id VARCHAR(32) NOT NULL, user_id VARCHAR(32) NOT NULL, xp BIGINT DEFAULT 0, level INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY(guild_id,user_id));
+CREATE TABLE IF NOT EXISTS history (id SERIAL PRIMARY KEY, guild_id VARCHAR(32) NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL, requested_by VARCHAR(32), played_at TIMESTAMPTZ DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS playlists (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, user_id VARCHAR(32) NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id,name));
+CREATE TABLE IF NOT EXISTS playlist_items (id SERIAL PRIMARY KEY, playlist_id INT REFERENCES playlists(id) ON DELETE CASCADE, url TEXT NOT NULL, title TEXT, duration INT, added_at TIMESTAMPTZ DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS user_memories (user_id VARCHAR(32) PRIMARY KEY, memory_data JSONB, updated_at TIMESTAMPTZ DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_history_guild_id ON history(guild_id);
+CREATE INDEX IF NOT EXISTS idx_guild_users_xp ON guild_users(guild_id,xp DESC);

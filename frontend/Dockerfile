@@ -1,16 +1,16 @@
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
-
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
-ENV PORT=3001
-ENV HOSTNAME="0.0.0.0"
+COPY --from=builder /app/proxy.cjs ./proxy.cjs
+ENV FRONTEND_PORT=3001 NEXT_INTERNAL_PORT=3002
 EXPOSE 3001
-CMD ["node", "server.js"]
+USER node
+CMD ["node","proxy.cjs"]

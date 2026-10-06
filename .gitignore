@@ -1,43 +1,52 @@
-# Node dependencies
+# Dependencies and generated builds
 node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+/frontend/next-env.d.ts
+/frontend/.vercel/
+
+# Tests and coverage
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# Local environments; only explicit templates belong in Git
+.env
+.env.*
+*.env
+!example.env
+!.env.example
+!.env.*.example
+
+# Private keys and credential containers
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs and temporary files
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.pnpm-debug.log*
+.cache/
+tmp/
+temp/
+*.tmp
 
-# Next.js build and cache
-.next/
-out/
-tsconfig.tsbuildinfo
-
-# Local environment files (DO NOT COMMIT SENSITIVE KEYS)
-.env
-.env.local
-.env.development.local
-.env.production.local
-.env.test.local
-*.env
-!example.env
-
-
-# IDE / Editor configuration
-.vscode/
+# IDE and OS files
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# OS metadata
+.vscode/
+*.swp
+*.swo
 .DS_Store
 Thumbs.db
 
-# Docker and infrastructure logs/data
-logs/
-infrastructure/lavalink/logs/
-infrastructure/postgres/data/
-
-# Temporary files
-tmp/
-temp/
+# Local database files
+/infrastructure/postgres/data/

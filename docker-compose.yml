@@ -3,97 +3,118 @@ services:
     build: ./backend
     container_name: mikrotech_backend
     restart: unless-stopped
-    env_file: stack.env
     environment:
+      NODE_ENV: production
+      API_PORT: 3000
+      BUILD_REVISION: ${BUILD_REVISION:-local}
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?Set DISCORD_CLIENT_ID}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:?Set DISCORD_CLIENT_SECRET}
+      GUILD_ID: ${GUILD_ID:-}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3001}
+      CALLBACK_URL: ${CALLBACK_URL:-http://localhost:3001/auth/discord/callback}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-mikrotech_v3}
       REDIS_URL: redis://redis:6379
-      LAVALINK_URL: nodelink:2333
-      LAVALINK_PASSWORD: ${NODELINK_PASSWORD:-youshallnotpass}
-      CALLBACK_URL: ${CALLBACK_URL}
-      API_PORT: 3000
+      NODELINK_URL: nodelink:2333
+      NODELINK_PASSWORD: ${NODELINK_PASSWORD:?Set NODELINK_PASSWORD}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     ports:
-      - "${API_PORT}:3000"
+      - "127.0.0.1:${API_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       nodelink:
-        condition: service_started
-    networks:
-      - mikrotech_net
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
 
   frontend:
     build: ./frontend
     container_name: mikrotech_frontend
     restart: unless-stopped
-    env_file: stack.env
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT}
       BACKEND_INTERNAL_URL: http://backend:3000
+      FRONTEND_PORT: 3001
     ports:
-      - "${FRONTEND_PORT}:3001"
+      - "${FRONTEND_PORT:-3001}:3001"
     depends_on:
-      - backend
-    networks:
-      - mikrotech_net
+      backend:
+        condition: service_started
 
   postgres:
     image: postgres:16-alpine
     container_name: mikrotech_postgres
     restart: unless-stopped
-    env_file: stack.env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-mikrotech_v3}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - mikrotech_net
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d postgres" ]
+      test: ["CMD-SHELL","pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
     container_name: mikrotech_redis
     restart: unless-stopped
+    command: ["redis-server","--appendonly","yes"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - mikrotech_net
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes: [redis_data:/data]
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: ["CMD","redis-cli","ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   nodelink:
-    image: performanc/nodelink:latest
+    build:
+      context: ./infrastructure/nodelink
+      args:
+        NODELINK_BASE_IMAGE: ${NODELINK_BASE_IMAGE:-performanc/nodelink@sha256:e15a9ae334f36432ed7f544521644bc99820eaba77ac4e592d939169b7a0bfa8}
+    image: mikrotech-nodelink:local
     container_name: mikrotech_nodelink
     restart: unless-stopped
-    env_file: stack.env
+    entrypoint: ["node","/opt/mikrotech/start.mjs"]
+    working_dir: /app
     environment:
-      NODELINK_SERVER_HOST: 0.0.0.0
-      NODELINK_SERVER_PORT: 2333
-      NODELINK_SERVER_PASSWORD: ${NODELINK_PASSWORD:-youshallnotpass}
+      NODELINK_PASSWORD: ${NODELINK_PASSWORD:?Set NODELINK_PASSWORD}
+      NODELINK_WORKERS: ${NODELINK_WORKERS:-1}
+      NODELINK_MAX_PLAYLIST_LENGTH: ${NODELINK_MAX_PLAYLIST_LENGTH:-10000}
+      NODELINK_LOG_LEVEL: ${NODELINK_LOG_LEVEL:-info}
+      NODELINK_HTTP_ENABLED: ${NODELINK_HTTP_ENABLED:-false}
+      NODELINK_RESAMPLING_QUALITY: ${NODELINK_RESAMPLING_QUALITY:-best}
     ports:
-      - "${NODELINK_PORT:-2333}:2333"
-    networks:
-      - mikrotech_net
-
-networks:
-  mikrotech_net:
-    driver: bridge
-
+      - "127.0.0.1:${NODELINK_PORT:-2333}:2333"
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:2333/version',{headers:{Authorization:process.env.NODELINK_PASSWORD}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 volumes:
   postgres_data:
   redis_data:
