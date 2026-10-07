@@ -43,7 +43,21 @@ Set `GUILD_ID` for a test server's command registration; leave blank for global 
 
 Use **Docker Standalone**, not Swarm, for these manifests.
 
-Build the backend, frontend and NodeLink wrapper images from this checkout on a Docker host, tag them in your registry, and push them using your existing registry credentials. Deploy [docker-compose.portainer.yml](docker-compose.portainer.yml) using Portainer's stack editor or Git integration and set:
+Every push to `main` runs the verification workflow and, after all checks pass, builds and publishes the backend, frontend and NodeLink wrapper to GitHub Packages (GHCR) for both `linux/amd64` and `linux/arm64`. Publication uses the automatic `GITHUB_TOKEN` with `packages: write`; no personal token, additional secret or application credentials are needed for the build. Pull requests run checks without publishing.
+
+After the first successful publication, open each package under the repository owner's **Packages**, then **Package settings → Change visibility → Public** to allow Portainer to pull without credentials. If you keep packages private, configure a GHCR registry credential in Portainer with a token granting `read:packages` and access to those packages.
+
+Deploy [docker-compose.portainer.yml](docker-compose.portainer.yml) using Portainer's stack editor or Git integration and set:
+
+```dotenv
+BACKEND_IMAGE=ghcr.io/thomas-jefersson-vaz/mikrotech-backend:latest
+FRONTEND_IMAGE=ghcr.io/thomas-jefersson-vaz/mikrotech-frontend:latest
+NODELINK_IMAGE=ghcr.io/thomas-jefersson-vaz/mikrotech-nodelink:latest
+```
+
+Each image also receives a `sha-<full-commit-SHA>` tag. The workflow summary lists image references and digests; use the same commit's tags or immutable digests for a fixed release or rollback. All three images must build and pass platform validation before `latest` is updated. Publication is serialized, and superseded commits do not update `latest`. Registry tag updates are sequential, so a promotion failure can leave mixed `latest` versions; fixed commit tags avoid that ambiguity. Updating the Portainer stack remains manual: request a fresh image pull when redeploying `latest`.
+
+Also set:
 
 - `BACKEND_IMAGE`, `FRONTEND_IMAGE`, `NODELINK_IMAGE`: the built release image references, preferably immutable digests.
 - The required application variables from `example.env`.
@@ -51,7 +65,7 @@ Build the backend, frontend and NodeLink wrapper images from this checkout on a 
 - `TRUST_PROXY=1` for the included gateway; expose the dashboard behind your HTTPS reverse proxy with WebSocket upgrades enabled.
 - `BUILD_REVISION` to the release commit.
 
-Build commands:
+Optional manual build commands for your own registry:
 
 ```sh
 docker build -t YOUR_REGISTRY/mikrotech-backend:RELEASE ./backend
