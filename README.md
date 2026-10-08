@@ -55,7 +55,11 @@ FRONTEND_IMAGE=ghcr.io/thomas-jefersson-vaz/mikrotech-frontend:latest
 NODELINK_IMAGE=ghcr.io/thomas-jefersson-vaz/mikrotech-nodelink:latest
 ```
 
-Each image also receives a `sha-<full-commit-SHA>` tag. The workflow summary lists image references and digests; use the same commit's tags or immutable digests for a fixed release or rollback. All three images must build and pass platform validation before `latest` is updated. Publication is serialized, and superseded commits do not update `latest`. Registry tag updates are sequential, so a promotion failure can leave mixed `latest` versions; fixed commit tags avoid that ambiguity. Updating the Portainer stack remains manual: request a fresh image pull when redeploying `latest`.
+Each image also receives a `sha-<full-commit-SHA>` tag. The workflow summary lists image references and digests; use the same commit's tags or immutable digests for a fixed release or rollback. All three images must build and pass platform validation before `latest` is updated. Publication and the deployment webhook are serialized, and superseded commits do not update `latest` or trigger deployment. Registry tag updates are sequential, so a promotion failure can leave mixed `latest` versions; fixed commit tags avoid that ambiguity.
+
+For automatic deployment, enable the stack webhook in Portainer and add its full URL as the repository Actions secret **PORTAINER_WEBHOOK_URL** under **Settings → Secrets and variables → Actions**. The URL must be reachable from GitHub-hosted runners with a valid TLS certificate. Keep all three image variables above on `latest`, allow Portainer to pull fresh images, and configure registry access as described above. Stack webhooks require a supported Portainer edition and environment; see the [Portainer webhook documentation](https://docs.portainer.io/user/docker/stacks/webhooks).
+
+After successfully promoting all three images on a push to `main`, the workflow sends one POST to the webhook. A missing secret, request timeout, or non-2xx response fails the deployment step. Requests are not automatically retried. The workflow summary confirms webhook acceptance only; check deployment completion and application health in Portainer. Fixed tags or digests remain available for manual releases and rollback, but do not follow automatic `latest` updates.
 
 Also set:
 
