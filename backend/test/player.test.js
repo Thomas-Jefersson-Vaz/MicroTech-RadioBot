@@ -48,6 +48,38 @@ function fixture(entries=[],resolver=async q=>({loadType:'track',data:track(q,'r
     const flush=async()=>{await new Promise(resolve=>setImmediate(resolve));await controller.serial.pending.get('guild');await new Promise(resolve=>setImmediate(resolve));};
     return {controller,player,shoukaku,plays,history,storage,event,flush,node,get queue(){return queue;}};
 }
+test('card controls reject old tokens inside the lock, including identical consecutive songs',async()=>{
+    const f=fixture([track('a','same'),track('b','same'),track('c')]);
+    await f.controller.playNext('guild');
+    const token=f.controller.getCurrentTrack('guild').playbackToken;
+    const results=await Promise.allSettled([f.controller.skip('guild',token),f.controller.skip('guild',token)]);
+    assert.equal(results[0].status,'fulfilled');assert.equal(results[1].status,'rejected');
+    assert.equal(f.controller.getCurrentTrack('guild').id,'b');
+    const generation=f.controller.generation('guild');
+    await assert.rejects(f.controller.stop('guild',token),{status:409});
+    await assert.rejects(f.controller.pause('guild','toggle',undefined,token),{status:409});
+    await assert.rejects(f.controller.volume('guild',10,token,true),{status:409});
+    assert.equal(f.controller.generation('guild'),generation);assert.equal(f.queue.length,1);
+});
+test('card toggles and relative volume are computed inside serialized control operations',async()=>{
+    const f=fixture([track('a')]);await f.controller.playNext('guild');
+    const token=f.controller.getCurrentTrack('guild').playbackToken;
+    await Promise.all([f.controller.pause('guild','toggle',undefined,token),f.controller.pause('guild','toggle',undefined,token)]);
+    assert.equal(f.controller.getPlayerState('guild').paused,false);
+    await f.controller.volume('guild',95);
+    await f.controller.volume('guild',10,token,true);assert.equal(f.player.volume,100);
+    await Promise.all([f.controller.volume('guild',-10,token,true),f.controller.volume('guild',-10,token,true)]);
+    assert.equal(f.player.volume,80);
+    await f.controller.volume('guild',0);await f.controller.volume('guild',-10,token,true);assert.equal(f.player.volume,0);
+});
+test('accepted playback exposes source channel only after enqueuing tracks',async()=>{
+    const f=fixture();const accepted=[];
+    f.controller.on('sessionAccepted',event=>accepted.push(event));
+    await f.controller.enqueue('guild','voice',{id:'u',username:'U'},'song','origin');
+    assert.deepEqual(accepted,[{guildId:'guild',channelId:'origin'}]);
+    await f.controller.enqueueTracks('guild','voice',{id:'u'},[track('other')],'playlist-origin');
+    assert.equal(accepted[1].channelId,'playlist-origin');
+});
 test('natural end advances once when stuck/end arrive together',async()=>{
     const f=fixture([track('a'),track('b'),track('c')]);
     await f.controller.playNext('guild');

@@ -25,3 +25,9 @@ Generated from the command registry using `npm run docs:commands` in backend.
 
 Music controls require the bot’s voice channel, with a guild-administrator override.
 Playlist ownership is private to the requester. Queue positions refer to upcoming tracks, starting at 1.
+
+Now playing cards update every five seconds and include pause/resume, skip, volume −/＋ (10-point steps), and stop controls. Stop clears the queue and disconnects voice. Controls use the same voice-channel permissions as music commands.
+
+Playback started through `/play`, `/playlist load`, or an AI request automatically posts a card in the originating channel for each new track. Adding tracks does not change that channel. `/nowplaying` replaces the active card in the requesting channel without changing where subsequent automatic cards appear. Only one card per server remains active; previous cards freeze with disabled controls when replaced or when their track ends.
+
+Card sessions end when playback is stopped or the queue finishes, and are not restored after a bot restart. Old controls then require a fresh `/nowplaying` query.

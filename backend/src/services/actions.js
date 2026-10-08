@@ -3,12 +3,12 @@ import { fail, integer, text } from '../utils/validation.js';
 export const MUSIC_ACTIONS = ['play','skip','stop','pause','resume','volume','clear','shuffle','jump','move','filter','playlist-load'];
 export class ActionService {
     constructor(player,database,access) { Object.assign(this,{player,database,access}); player.authorize = (guild,user,control) => access.check(guild,user,control); }
-    async execute(guildId,user,action,args = {}) {
+    async execute(guildId,user,action,args = {},context = {}) {
         if (!MUSIC_ACTIONS.includes(action)) fail('Unknown music action');
         const access = await this.access.check(guildId,user.id,true);
         let result;
         switch(action) {
-            case 'play': result = await this.player.enqueue(guildId,access.channelId,user,text(args.query,2000,'Query'),args.textChannelId); break;
+            case 'play': result = await this.player.enqueue(guildId,access.channelId,user,text(args.query,2000,'Query'),context.textChannelId || args.textChannelId); break;
             case 'skip': result = await this.player.skip(guildId); break;
             case 'stop': result = await this.player.stop(guildId); break;
             case 'pause': result = await this.player.pause(guildId,true); break;
@@ -23,7 +23,7 @@ export class ActionService {
                 if (!playlist.items.length) fail('Playlist is empty');
                 result = await this.player.enqueueTracks(guildId,access.channelId,user,playlist.items.map(item => ({
                     url:item.url, info:{ title:item.title || item.url,uri:item.url,length:(item.duration || 0)*1000,author:'Unknown' }
-                })));
+                })),context.textChannelId);
                 break;
             }
         }

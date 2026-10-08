@@ -14,6 +14,7 @@ import CommandHandler from './handlers/commandHandler.js';
 import { AccessService } from './services/access.js';
 import { ActionService } from './services/actions.js';
 import { AiService } from './services/ai.js';
+import { NowPlayingService } from './services/nowplaying.js';
 import { attachLive } from './services/live.js';
 import { createApiRouter } from './routes/api.js';
 import authRouter from './routes/auth.js';
@@ -69,7 +70,8 @@ player = new PlayerController(client,manager);
 const access = new AccessService(client);
 const actions = new ActionService(player,DatabaseService,access);
 const ai = new AiService(DatabaseService,actions);
-services = {access,actions,ai,playerController:player,database:DatabaseService,commandHandler:CommandHandler};
+const nowPlaying = new NowPlayingService(client,player,access);
+services = {access,actions,ai,nowPlaying,playerController:player,database:DatabaseService,commandHandler:CommandHandler};
 services.router = createApiRouter(services);
 player.on('failure',failure => log.error('Playback retry limit',failure));
 stopLive = attachLive(server,{sessionMiddleware,passport,access,playerController:player,sessionStore,origin:new URL(config.frontendUrl).origin,ready});
@@ -81,7 +83,7 @@ client.on('messageCreate',async message => {
         if(!/^[\/!]/.test(message.content.trim())) await DatabaseService.awardXp(message.guildId,message.author.id,message.content.length);
         if(!message.mentions.users.has(client.user.id)) return;
         await message.channel.sendTyping();
-        const reply = await services.ai.respond(message.guildId,message.author,message.content.replace(/<@!?\d+>/g,'').trim());
+        const reply = await services.ai.respond(message.guildId,message.author,message.content.replace(/<@!?\d+>/g,'').trim(),{textChannelId:message.channelId});
         await message.reply({content:reply.slice(0,1900),allowedMentions:{parse:[],repliedUser:false}});
     } catch(error) {
         log.error('Message processing failed',error.message);
@@ -114,6 +116,7 @@ async function shutdown(signal, exitCode = 0) {
     const forcedExit = setTimeout(() => process.exit(1),10000);
     clearInterval(memoryTimer);clearInterval(healthTimer);
     try {
+        await nowPlaying.close();
         if(stopLive) await stopLive();
         if(player) for(const id of manager.shoukaku.players.keys()) player.invalidate(id);
         if(manager) await manager.destroy();

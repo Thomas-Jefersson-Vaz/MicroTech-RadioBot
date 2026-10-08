@@ -1,4 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
+import { nowPlayingReply } from './nowplaying.js';
 
 const make = (name,description) => new SlashCommandBuilder().setName(name).setDescription(description).setDMPermission(false);
 const string = (builder,name,description,required = true) => builder.addStringOption(o => o.setName(name).setDescription(description).setRequired(required));
@@ -37,11 +38,10 @@ const commands = [
         const current = snapshot.current ? 'Now playing: ' + snapshot.current.info.title + '\n' : '';
         await i.editReply({content:(current + snapshot.queue.slice(start,start+10).map((t,n) => (start+n+1) + '. ' + t.info.title).join('\n') + '\nPage ' + page + ' • ' + snapshot.queue.length + ' upcoming').slice(0,1900),allowedMentions:{parse:[]}});
     }},
-    { data:make('nowplaying','Show the current song and actual playback position.'), async execute(i,{access,playerController}) {
+    { data:make('nowplaying','Show the current song and actual playback position.'), async execute(i,{access,playerController,nowPlaying}) {
         await i.deferReply(); await access.check(i.guildId,i.user.id);
-        const track = playerController.getCurrentTrack(i.guildId);
-        const state = playerController.getPlayerState(i.guildId);
-        await i.editReply({content:track ? track.info.title + '\n' + Math.floor((state?.position || 0)/1000) + ' / ' + Math.floor((state?.duration || 0)/1000) + ' seconds' + (state?.paused ? ' • paused' : '') : 'Nothing is playing.',allowedMentions:{parse:[]}});
+        if (nowPlaying) await nowPlaying.show(i);
+        else await i.editReply(nowPlayingReply(await playerController.snapshot(i.guildId)));
     }},
     { data:int(make('history','Show recent server playback history.'),'count','Number of tracks',1,25,false), async execute(i,{access,database}) {
         await i.deferReply(); await access.check(i.guildId,i.user.id);
@@ -82,7 +82,7 @@ commands.push({data:playlist,async execute(i,{access,database,actions}) {
         case 'delete': await database.deletePlaylist(i.user.id,id); result = 'Playlist deleted.'; break;
         case 'add': result = await database.addPlaylistItem(i.user.id,id,{url:i.options.getString('url'),title:i.options.getString('title')}); break;
         case 'remove': await database.removePlaylistItem(i.user.id,id,i.options.getInteger('position')); result = 'Track removed.'; break;
-        case 'load': result = await actions.execute(i.guildId,i.user,'playlist-load',{id}); break;
+        case 'load': result = await actions.execute(i.guildId,i.user,'playlist-load',{id},{textChannelId:i.channelId}); break;
     }
     await i.editReply({content:typeof result === 'string' ? result : JSON.stringify(result,null,2).slice(0,1900),allowedMentions:{parse:[]}});
 }});

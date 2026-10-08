@@ -154,6 +154,7 @@ export default class PlayerController extends EventEmitter {
             await this.ensurePlayer(id, channelId, textChannelId);
             if (generation !== this.generation(id)) return { type: 'empty', count: 0 };
             await this.queue.add(id, tracks);
+            this.emit('sessionAccepted', { guildId: id, channelId: textChannelId });
             this.lastErrors.delete(id);
             this.failureStreaks.set(id, 0);
             this.changed(id);
@@ -162,13 +163,14 @@ export default class PlayerController extends EventEmitter {
             return { type: tracks.length === 1 ? 'track' : 'playlist', count: tracks.length, track: tracks[0], playlistNames, flags };
         });
     }
-    async enqueueTracks(id, channelId, user, tracks) {
+    async enqueueTracks(id, channelId, user, tracks, textChannelId) {
         const generation = this.generation(id);
         return this.serial.run(id, async () => {
             if (this.authorize) channelId = (await this.authorize(id, user.id, true)).channelId;
             await this.ensurePlayer(id, channelId);
             if (generation !== this.generation(id)) fail('Playback changed; retry', 409);
             await this.queue.add(id, tracks.map(t => ({ ...t, requester: { id: user.id, username: user.username } })));
+            this.emit('sessionAccepted', { guildId: id, channelId: textChannelId });
             this.lastErrors.delete(id);
             this.failureStreaks.set(id, 0);
             this.changed(id);
@@ -314,9 +316,14 @@ export default class PlayerController extends EventEmitter {
         this.emit('failure', { guildId: id, message: 'Five consecutive tracks could not resolve. Queue retained; use /resume to retry.' });
     }
     async playNext(id) { return this.serial.run(id, () => this.advance(id)); }
-    async skip(id) {
-        this.invalidate(id);
+    assertPlayback(id, token) {
+        if (token && (this.getCurrentTrack(id)?.playbackToken !== token || this.getCurrentTrack(id)?.terminal)) fail('Esta reprodução já terminou. Use /nowplaying.', 409);
+    }
+    async skip(id, token) {
+        if (!token) this.invalidate(id);
         return this.serial.run(id, async () => {
+            this.assertPlayback(id, token);
+            if (token) this.invalidate(id);
             const player = this.shoukaku.players.get(id);
             if (!player) return false;
             this.failureStreaks.set(id, 0);
@@ -329,9 +336,12 @@ export default class PlayerController extends EventEmitter {
             return true;
         });
     }
-    async stop(id) {
-        this.invalidate(id); // Cancels pending resolves immediately, before waiting for the lock.
+    async stop(id, token) {
+        if (!token) this.invalidate(id); // Cancels pending resolves immediately, before waiting for the lock.
         return this.serial.run(id, async () => {
+            this.assertPlayback(id, token);
+            if (token) this.invalidate(id);
+            this.emit('sessionEnded', id);
             await this.queue.clear(id);
             this.failureStreaks.delete(id);
             this.lastErrors.delete(id);
@@ -344,8 +354,10 @@ export default class PlayerController extends EventEmitter {
             return true;
         });
     }
-    async pause(id, paused = true, channelId) {
+    async pause(id, paused = true, channelId, token) {
         return this.serial.run(id, async () => {
+            this.assertPlayback(id, token);
+            if (paused === 'toggle') paused = !this.getPlayerState(id)?.paused;
             const player = !paused && channelId ? await this.ensurePlayer(id, channelId) : this.shoukaku.players.get(id);
             if (!player) return false;
             if (!paused && !this.currentTracks.has(id)) { this.lastErrors.delete(id); this.failureStreaks.set(id, 0); await this.advance(id); return true; }
@@ -373,9 +385,11 @@ export default class PlayerController extends EventEmitter {
             return true;
         });
     }
-    async volume(id, value) {
-        integer(value, 0, 100, 'Volume');
+    async volume(id, value, token, delta = false) {
+        if (!delta) integer(value, 0, 100, 'Volume');
         return this.serial.run(id, async () => {
+            this.assertPlayback(id, token);
+            if (delta) value = Math.max(0, Math.min(100, (this.options.get(id)?.volume ?? 100) + value));
             const player = this.shoukaku.players.get(id);
             if (player) await player.update({ volume: value, paused: this.playerStates.get(id)?.paused || false }, true);
             await this.database.upsertGuildSettings(id, { volume: value });

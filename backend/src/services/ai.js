@@ -71,7 +71,7 @@ export class AiService {
         }
         fail('AI providers are unavailable. Please try again later.',503);
     }
-    async respond(guildId,user,content) {
+    async respond(guildId,user,content,context = {}) {
         if (!this.enabled) return 'AI chat is disabled. An administrator must configure a provider and model.';
         const key = guildId + ':' + user.id;
         if (this.cooldowns.has(key)) fail('Please wait for your current AI request to finish',429);
@@ -84,7 +84,7 @@ export class AiService {
                 let result = '';
                 if (answer.action) {
                     try {
-                        const outcome = await this.actions.execute(guildId,user,answer.action.name,answer.action.args);
+                        const outcome = await this.actions.execute(guildId,user,answer.action.name,answer.action.args,context);
                         result = '\nAction ' + answer.action.name + ': completed' + (outcome.count ? ' (' + outcome.count + ' tracks)' : '') + '.';
                     } catch(error) { result = '\nAction ' + answer.action.name + ': failed — ' + (error.status ? error.message : 'service unavailable') + '.'; }
                 }

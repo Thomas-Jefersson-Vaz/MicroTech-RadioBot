@@ -28,6 +28,10 @@ export class CommandHandler {
         return names;
     }
     async handleInteraction(interaction,context) {
+        if (interaction.isButton?.() && context.nowPlaying) {
+            await context.nowPlaying.handleButton(interaction,context.ready).catch(error => console.error('[NowPlaying]',error.message));
+            return;
+        }
         if (!interaction.isChatInputCommand()) return;
         if (!interaction.guildId) return interaction.reply({content:'Use commands in a server.',flags:64});
         const command = this.commands.get(interaction.commandName);
