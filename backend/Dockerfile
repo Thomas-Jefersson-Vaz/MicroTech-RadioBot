@@ -7,6 +7,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
+ARG IMAGE_REVISION
+ENV IMAGE_REVISION=${IMAGE_REVISION}
 ENV NODE_ENV=production
 EXPOSE 3000
 USER node

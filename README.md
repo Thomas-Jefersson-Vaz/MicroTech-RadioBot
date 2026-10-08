@@ -61,6 +61,12 @@ For automatic deployment, enable the stack webhook in Portainer and add its full
 
 After successfully promoting all three images on a push to `main`, the workflow sends one POST to the webhook. A missing secret, request timeout, or non-2xx response fails the deployment step. Requests are not automatically retried. The workflow summary confirms webhook acceptance only; check deployment completion and application health in Portainer. Fixed tags or digests remain available for manual releases and rollback, but do not follow automatic `latest` updates.
 
+Immediately before the webhook, the workflow checks `main` again and skips deployment if the release commit has been superseded. This reduces the race window but does not guarantee Portainer's asynchronous deployment completion order. No remote health check or deployment-status polling is performed.
+
+The webhook explicitly sets `pullimage=true`, preserving other URL parameters. The Portainer Compose manifest sets `pull_policy: always` for backend, frontend and NodeLink; use a Portainer/Compose version that supports this policy and enable fresh image pulling in the stack. Confirm the actual image pull and container recreation in Portainer; webhook acceptance alone does not prove either occurred.
+
+Published backend images embed the commit SHA as `IMAGE_REVISION`. The existing `build` field in `/`, `/health` and `/ready` uses that value before `BUILD_REVISION`, with `local` as the final fallback. This identifies the running backend image without a manually maintained stack revision.
+
 Also set:
 
 - `BACKEND_IMAGE`, `FRONTEND_IMAGE`, `NODELINK_IMAGE`: the built release image references, preferably immutable digests.

@@ -13,7 +13,7 @@ export const config = {
     sessionSecret: process.env.SESSION_SECRET,
     secureCookies: process.env.COOKIE_SECURE === 'true',
     trustProxy: Number(process.env.TRUST_PROXY || 0),
-    buildRevision: process.env.BUILD_REVISION || 'local',
+    buildRevision: process.env.IMAGE_REVISION || process.env.BUILD_REVISION || 'local',
     discord: { token: process.env.DISCORD_TOKEN, clientId: process.env.DISCORD_CLIENT_ID, clientSecret: process.env.DISCORD_CLIENT_SECRET, guildId: process.env.GUILD_ID },
     redis: { url: process.env.REDIS_URL || `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || 6379}` },
     postgres: { user: process.env.POSTGRES_USER || 'admin', host: process.env.POSTGRES_HOST || 'localhost',

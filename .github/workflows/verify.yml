@@ -86,6 +86,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./backend
+          build-args: IMAGE_REVISION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE_NAMESPACE }}/mikrotech-backend:sha-${{ github.sha }}
@@ -159,12 +160,21 @@ jobs:
           PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
         run: |
           set -euo pipefail
+          main_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$main_sha" != "$GITHUB_SHA" ]; then
+            echo 'A newer commit is on main; deployment webhook skipped.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ -z "$PORTAINER_WEBHOOK_URL" ]; then
             echo '::error::Configure the PORTAINER_WEBHOOK_URL repository secret to enable deployment.'
             exit 1
           fi
+          webhook_url=$(node -e 'const url = new URL(process.env.PORTAINER_WEBHOOK_URL); url.searchParams.set("pullimage", "true"); process.stdout.write(url.href);' 2>/dev/null) || {
+            echo '::error::PORTAINER_WEBHOOK_URL is not a valid URL.'
+            exit 1
+          }
           if ! status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-            --request POST --connect-timeout 10 --max-time 120 "$PORTAINER_WEBHOOK_URL"); then
+            --request POST --connect-timeout 10 --max-time 120 "$webhook_url"); then
             echo '::error::Portainer webhook request failed or timed out.'
             exit 1
           fi

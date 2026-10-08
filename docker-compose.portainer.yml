@@ -1,6 +1,7 @@
 services:
   backend:
     image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to the release image digest}
+    pull_policy: always
     container_name: mikrotech_backend
     restart: unless-stopped
     environment:
@@ -47,6 +48,7 @@ services:
 
   frontend:
     image: ${FRONTEND_IMAGE:?Set FRONTEND_IMAGE to the release image digest}
+    pull_policy: always
     container_name: mikrotech_frontend
     restart: unless-stopped
     environment:
@@ -92,6 +94,7 @@ services:
 
   nodelink:
     image: ${NODELINK_IMAGE:?Set NODELINK_IMAGE to the built NodeLink wrapper image digest}
+    pull_policy: always
     container_name: mikrotech_nodelink
     restart: unless-stopped
     entrypoint: ["node","/opt/mikrotech/start.mjs"]
