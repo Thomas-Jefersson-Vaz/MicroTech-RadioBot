@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import PlayerController from '../src/services/player.js';
+import { ActionService } from '../src/services/actions.js';
 const track=(id,encoded=id) => ({id,encoded,info:{title:id,uri:'https://www.youtube.com/watch?v='+id,length:100000,author:'Artist'},requester:{id:'user',username:'User'}});
 function fixture(entries=[],resolver=async q=>({loadType:'track',data:track(q,'resolved:'+q)})) {
     let queue=structuredClone(entries);
@@ -71,6 +72,14 @@ test('card toggles and relative volume are computed inside serialized control op
     await Promise.all([f.controller.volume('guild',-10,token,true),f.controller.volume('guild',-10,token,true)]);
     assert.equal(f.player.volume,80);
     await f.controller.volume('guild',0);await f.controller.volume('guild',-10,token,true);assert.equal(f.player.volume,0);
+});
+
+test('simultaneous command toggles return each applied state inside the player lock',async()=>{
+    const f=fixture([track('a')]);await f.controller.playNext('guild');
+    const actions=new ActionService(f.controller,{}, {check:async()=>({channelId:'voice'})});
+    const results=await Promise.all([actions.execute('guild',{id:'user'},'pause',{toggle:true}),actions.execute('guild',{id:'user'},'pause',{toggle:true})]);
+    assert.deepEqual(results,[{success:true,paused:true},{success:true,paused:false}]);
+    assert.equal(f.controller.getPlayerState('guild').paused,false);
 });
 test('accepted playback exposes source channel only after enqueuing tracks',async()=>{
     const f=fixture();const accepted=[];

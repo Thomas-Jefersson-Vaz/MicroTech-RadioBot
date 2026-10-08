@@ -16,7 +16,10 @@ export function text(value, max = 1000, label = 'Text') {
     return value.trim();
 }
 export function webUrl(value) {
-    const url = new URL(text(value, 2048, 'URL'));
+    const input = text(value, 2048, 'URL');
+    let url;
+    try { url = new URL(input); }
+    catch { fail('Use a valid HTTP or HTTPS URL'); }
     if (!['http:', 'https:'].includes(url.protocol)) fail('Use an HTTP or HTTPS URL');
     return url.toString();
 }

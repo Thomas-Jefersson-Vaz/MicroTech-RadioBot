@@ -355,18 +355,19 @@ export default class PlayerController extends EventEmitter {
         });
     }
     async pause(id, paused = true, channelId, token) {
+        const toggle = paused === 'toggle';
         return this.serial.run(id, async () => {
             this.assertPlayback(id, token);
             if (paused === 'toggle') paused = !this.getPlayerState(id)?.paused;
             const player = !paused && channelId ? await this.ensurePlayer(id, channelId) : this.shoukaku.players.get(id);
             if (!player) return false;
-            if (!paused && !this.currentTracks.has(id)) { this.lastErrors.delete(id); this.failureStreaks.set(id, 0); await this.advance(id); return true; }
+            if (!paused && !this.currentTracks.has(id)) { this.lastErrors.delete(id); this.failureStreaks.set(id, 0); await this.advance(id); return toggle ? { paused: false } : true; }
             const state = this.playerStates.get(id);
             const position = this.getPlayerState(id)?.position || 0;
             await player.setPaused(paused);
             if (state) Object.assign(state, { position, paused, timestamp: Date.now() });
             this.changed(id);
-            return true;
+            return toggle ? { paused } : true;
         });
     }
     async editQueue(id, action, from, to) {

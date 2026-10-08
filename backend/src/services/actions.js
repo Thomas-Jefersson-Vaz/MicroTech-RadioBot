@@ -11,7 +11,7 @@ export class ActionService {
             case 'play': result = await this.player.enqueue(guildId,access.channelId,user,text(args.query,2000,'Query'),context.textChannelId || args.textChannelId); break;
             case 'skip': result = await this.player.skip(guildId); break;
             case 'stop': result = await this.player.stop(guildId); break;
-            case 'pause': result = await this.player.pause(guildId,true); break;
+            case 'pause': result = await this.player.pause(guildId,args.toggle === true ? 'toggle' : true,access.channelId); break;
             case 'resume': result = await this.player.pause(guildId,false,access.channelId); break;
             case 'volume': result = await this.player.volume(guildId,integer(args.value,0,100,'Volume')); break;
             case 'filter': result = await this.player.filter(guildId,text(args.preset,20,'Filter')); break;

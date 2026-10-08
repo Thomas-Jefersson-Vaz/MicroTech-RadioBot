@@ -9,7 +9,13 @@ const definition = command => ({ name:command.name,description:command.descripti
     })) });
 
 export class CommandHandler {
-    constructor(registry = commands) { this.commands = new Map(registry.map(command => [command.data.name,command])); }
+    constructor(registry = commands) {
+        this.commands = new Map();
+        for (const command of registry) {
+            if (this.commands.has(command.data.name)) throw new Error('Duplicate command name: ' + command.data.name);
+            this.commands.set(command.data.name, command);
+        }
+    }
     async loadCommands() {
         for (const command of this.commands.values()) command.data.toJSON();
         return [...this.commands.keys()];
