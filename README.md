@@ -37,7 +37,7 @@ Requires Node.js 24, Docker Compose and a Discord application.
 
 Default dashboard: http://localhost:3001. Backend diagnostics: http://localhost:3000/health. All browser API, OAuth and WebSocket traffic passes through the dashboard gateway. Database, Redis, backend diagnostics and NodeLink published ports bind to loopback by default.
 
-Set `GUILD_ID` for a test server's command registration; leave blank for global registration. Global and guild registrations are separate Discord scopes: old registrations in another scope are not automatically deleted.
+All commands are registered and verified globally for every server. Optionally set `GUILD_ID` to also synchronize that server immediately with the same command catalog. Global and guild registrations are separate Discord scopes; registrations in other guilds are not automatically deleted. Restart the updated backend (or rebuild and redeploy its container) to publish the catalog, then verify commands in both servers. If commands remain hidden, check the bot installation and command permissions in that server.
 
 ## Portainer on the HomeLab
 

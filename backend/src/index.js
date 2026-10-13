@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { Client,GatewayIntentBits,REST,Routes } from 'discord.js';
+import { Client,GatewayIntentBits,REST } from 'discord.js';
 import session from 'express-session';
 import RedisStore from 'connect-redis';
 import { config,validateConfig } from './config/env.js';
@@ -96,9 +96,9 @@ async function registerCommands() {
     if(registering || registered || !client.isReady()) return;
     registering=true;lastRegistrationAttempt=Date.now();
     const rest = new REST({version:'10'}).setToken(config.discord.token);
-    const route = config.discord.guildId ? Routes.applicationGuildCommands(config.discord.clientId,config.discord.guildId) : Routes.applicationCommands(config.discord.clientId);
     try {
-        const names = await CommandHandler.register(rest,route);
+        const names = await CommandHandler.registerApplication(rest,config.discord.clientId,config.discord.guildId,
+            (scope,names) => log.info('Discord command scope verified',{scope,names}));
         registered=true;
         registrationError=null;
         log.info('Discord commands verified',names);

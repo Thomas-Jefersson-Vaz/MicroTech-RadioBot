@@ -1,12 +1,25 @@
-import { EmbedBuilder, escapeMarkdown, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import {
+    escapeMarkdown, ContainerBuilder, SectionBuilder, ThumbnailBuilder, TextDisplayBuilder,
+    SeparatorBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags
+} from 'discord.js';
 
-const clip = (value, limit) => String(value).slice(0, limit);
-const label = (value, fallback, limit = 200) => clip(escapeMarkdown(String(value || fallback)), limit);
-const milliseconds = value => Number.isFinite(value) ? Math.max(0, value) : 0;
+const milliseconds = value => Number.isFinite(value) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, value)) : 0;
+function label(value, fallback, limit = 200) {
+    let result = '';
+    for (const character of String(value || fallback).replace(/[\s\u0000-\u001f\u007f]+/g, ' ')) {
+        const escaped = character === '@' ? '@\u200b' : /[<>\[\]()#]/.test(character) ? '\\' + character : escapeMarkdown(character);
+        if (result.length + escaped.length > limit - 1) return result + '…';
+        result += escaped;
+    }
+    return result;
+}
 function safeUrl(value) {
+    if (typeof value !== 'string' || value.length > 1024 || /[\u0000-\u0020\u007f]/.test(value)) return undefined;
     try {
         const url = new URL(value);
-        return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined;
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return undefined;
+        const encoded = url.href.replace(/[()[\]<>]/g, character => '%' + character.charCodeAt(0).toString(16).toUpperCase());
+        return encoded.length <= 1024 ? encoded : undefined;
     } catch { return undefined; }
 }
 export function formatTime(value) {
@@ -16,47 +29,55 @@ export function formatTime(value) {
     return (hours ? hours + ':' + String(minutes).padStart(2, '0') : String(minutes)) + ':' + String(seconds % 60).padStart(2, '0');
 }
 
-export function nowPlayingReply(snapshot, { dynamic = false, ended = false } = {}) {
+// Signatures describe bounded, displayed fields, never the complete queue.
+export function nowPlayingPresentation(snapshot, { dynamic = false, ended = false, sessionEnded = false } = {}) {
     const { current: track, playerState: state, settings = {}, queue = [] } = snapshot;
-    const allowedMentions = { parse: [] };
-    if (!track) return { content: 'Nenhuma música tocando no momento.', embeds: [], components: [], allowedMentions };
+    const container = new ContainerBuilder().setAccentColor(0x1abc9c);
+    const text = content => new TextDisplayBuilder().setContent(content);
+    const payload = { flags: MessageFlags.IsComponentsV2, components: [container], allowedMentions: { parse: [] } };
+    if (!track) {
+        container.addTextDisplayComponents(text('Nenhuma música tocando no momento.'));
+        const key = JSON.stringify(container.toJSON());
+        return { payload, visualKey: key, semanticKey: key };
+    }
     const info = track.info || {};
     const duration = milliseconds(state?.duration) || milliseconds(info.length);
     const position = duration ? Math.min(milliseconds(state?.position), duration) : milliseconds(state?.position);
-    const status = state?.connected === false ? '🔌 Desconectado' : state?.paused ? '⏸️ Pausado' : '▶️ Tocando';
-    let progress = formatTime(position) + ' / duração desconhecida';
+    const status = ended ? '⏹️ Encerrado' : state?.connected === false ? '🔌 Desconectado' : state?.paused ? '⏸️ Pausado' : '▶️ Tocando';
+    const url = safeUrl(info.uri) || safeUrl(track.url);
+    const artwork = safeUrl(info.artworkUrl);
+    const title = label(info.title, 'Música sem título', 256);
+    const heading = '## 🎶 ' + (ended ? 'Reprodução encerrada' : 'Tocando agora') + '\n**' + (url ? `[${title}](${url})` : title) + '**';
+    const artist = label(info.author, 'Artista desconhecido') + '\n' + status;
+    if (artwork) container.addSectionComponents(new SectionBuilder().addTextDisplayComponents(text(heading), text(artist))
+        .setThumbnailAccessory(new ThumbnailBuilder().setURL(artwork)));
+    else container.addTextDisplayComponents(text(heading), text(artist));
+
+    let progress = '`' + formatTime(position) + '` / duração desconhecida';
     if (info.isStream) progress = '🔴 Ao vivo';
     else if (duration) {
-        const filled = Math.floor(position / duration * 12);
-        progress = '━'.repeat(filled) + '●' + '─'.repeat(12 - filled) + '\n`' + formatTime(position) + ' / ' + formatTime(duration) + '`';
+        const index = Math.floor(position / duration * 11);
+        progress = '━'.repeat(index) + '●' + '─'.repeat(11 - index) + '\n`' + formatTime(position) + ' / ' + formatTime(duration) + '`';
     }
     const filters = { reset: 'Desativado', bassboost: 'Bass boost', nightcore: 'Nightcore', vaporwave: 'Vaporwave' };
-    const embed = new EmbedBuilder()
-        .setColor(0x1abc9c)
-        .setAuthor({ name: '🎶 Tocando agora' })
-        .setTitle(label(info.title, 'Música sem título', 256))
-        .setDescription(label(info.author, 'Artista desconhecido'))
-        .addFields(
-            { name: status, value: progress },
-            { name: 'Pedido por', value: label(track.requester?.username, 'Desconhecido'), inline: true },
-            { name: 'Volume', value: Number.isFinite(settings.volume) ? settings.volume + '%' : 'Desconhecido', inline: true },
-            { name: 'Filtro', value: label(filters[settings.filter] || settings.filter, 'Desativado'), inline: true },
-            { name: 'Na fila', value: queue.length + (queue.length === 1 ? ' música' : ' músicas'), inline: true },
-            { name: 'Próxima música', value: queue.length ? label(queue[0].info?.title, 'Música sem título') + '\n' + label(queue[0].info?.author, 'Artista desconhecido') : 'Fila vazia' }
-        )
-        .setFooter({ text: 'Progresso no momento da consulta • /nowplaying para atualizar' });
-    const url = safeUrl(info.uri || track.url);
-    const artwork = safeUrl(info.artworkUrl);
-    if (url) embed.setURL(url);
-    if (artwork) embed.setThumbnail(artwork);
-    const components = [];
+    const count = snapshot.queueLength ?? queue.length;
+    const details = '**Pedido por:** ' + label(track.requester?.username, 'Desconhecido') + '\n**Volume:** ' +
+        (Number.isFinite(settings.volume) ? settings.volume + '%' : 'Desconhecido') + ' • **Filtro:** ' +
+        label(filters[settings.filter] || settings.filter, 'Desativado') + '\n**Na fila:** ' + count + (count === 1 ? ' música' : ' músicas');
+    const next = '**Próxima música**\n' + (queue[0] ? label(queue[0].info?.title, 'Música sem título') + '\n' +
+        label(queue[0].info?.author, 'Artista desconhecido') : 'Fila vazia');
+    const footer = ended ? (sessionEnded ? 'Sessão encerrada' : 'Reprodução encerrada') + ' • Controles desativados' :
+        dynamic ? 'Progresso atualizado periodicamente • /nowplaying para atualizar' : 'Progresso no momento da consulta • /nowplaying para atualizar';
+    container.addSeparatorComponents(new SeparatorBuilder()).addTextDisplayComponents(text(progress), text(details))
+        .addSeparatorComponents(new SeparatorBuilder()).addTextDisplayComponents(text(next), text('-# ' + footer));
     if (dynamic && track.playbackToken) {
-        embed.setFooter({ text: ended ? 'Reprodução encerrada • Controles desativados' : 'Atualizado a cada 5 segundos' });
-        if (ended) embed.setAuthor({ name: '🎶 Reprodução encerrada' }).setColor(0x747f8d);
         const buttons = [['toggle', state?.paused ? 'Retomar' : 'Pausar'], ['skip', 'Pular'], ['down', 'Volume −'], ['up', 'Volume +'], ['stop', 'Parar']];
-        components.push(new ActionRowBuilder().addComponents(buttons.map(([action, name]) => new ButtonBuilder()
+        container.addActionRowComponents(new ActionRowBuilder().addComponents(buttons.map(([action, name]) => new ButtonBuilder()
             .setCustomId('np:' + track.playbackToken + ':' + action).setLabel(name)
             .setStyle(action === 'stop' ? ButtonStyle.Danger : ButtonStyle.Secondary).setDisabled(ended))));
     }
-    return { content: '', embeds: [embed], components, allowedMentions };
+    return { payload, visualKey: JSON.stringify(container.toJSON()), semanticKey: JSON.stringify([
+        track.playbackToken, heading, artist, artwork, details, next, footer, duration, Boolean(info.isStream), Boolean(state?.paused), ended
+    ]) };
 }
+export function nowPlayingReply(snapshot, options) { return nowPlayingPresentation(snapshot, options).payload; }

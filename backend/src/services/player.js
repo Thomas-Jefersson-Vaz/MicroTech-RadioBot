@@ -33,9 +33,9 @@ export default class PlayerController extends EventEmitter {
     }
     generation(id) { return this.generations.get(id) || 0; }
     invalidate(id) { this.generations.set(id, this.generation(id) + 1); this.prefetch.delete(id); }
-    changed(id) {
+    changed(id, details) {
         this.revisions.set(id, (this.revisions.get(id) || 0) + 1);
-        this.emit('change', id);
+        this.emit('change', id, details);
     }
     getCurrentTrack(id) { return this.currentTracks.get(id) || null; }
     getPlayerState(id) {
@@ -46,12 +46,14 @@ export default class PlayerController extends EventEmitter {
         const position = Math.max(0, Math.min(state.position + elapsed * speed, state.duration || Infinity));
         return { position: Math.floor(position), duration: state.duration, paused: state.paused, connected: state.connected };
     }
-    async snapshot(id) {
+    async snapshot(id, { queuePreview = false } = {}) {
         if (!this.options.has(id)) {
             const saved = await this.database.getGuildSettings(id);
             if (!this.options.has(id)) this.options.set(id, { volume: saved?.volume_preferencial ?? 100, filter: 'reset' });
         }
-        return { guildId: id, revision: this.revisions.get(id) || 0, queue: await this.queue.getQueue(id),
+        const summary = queuePreview ? await this.queue.summary(id) : null;
+        const queue = summary ? (summary.head ? [summary.head] : []) : await this.queue.getQueue(id);
+        return { guildId: id, revision: this.revisions.get(id) || 0, queue, ...(summary ? { queueLength: summary.length } : {}),
             current: this.getCurrentTrack(id), playerState: this.getPlayerState(id), playbackError: this.lastErrors.get(id) || null, settings: this.options.get(id) || { volume: 100, filter: 'reset' } };
     }
     node() { return this.shoukaku.options.nodeResolver(this.shoukaku.nodes); }
@@ -118,6 +120,20 @@ export default class PlayerController extends EventEmitter {
         log.debug('Resolution completed', { milliseconds: Date.now() - started, count: result.tracks.length });
         return result;
     }
+    async extractPlaylist(part) {
+        const result = await this.extractor.extractPlaylist(part);
+        if (!result.tracks.length) throw new Error('Playlist extraction returned no tracks');
+        return { tracks: result.tracks.map(t => ({ url: t.url, info: { title: t.title, uri: t.url, length: t.duration, author: t.author || 'Unknown' } })), playlistName: result.playlistName };
+    }
+    async playTrackRetainingQueue(player, id, head, track, token) {
+        try { await player.playTrack({ track: { encoded: track.encoded, userData: { playbackToken: token } }, userData: { playbackToken: token } }); }
+        catch (error) {
+            await this.queue.client.lPush('queue:' + id, JSON.stringify(head));
+            this.currentTracks.delete(id);
+            this.playerStates.delete(id);
+            throw error;
+        }
+    }
     async enqueue(id, channelId, user, raw, textChannelId) {
         if (!channelId) fail('Join a voice channel first', 403);
         text(raw, 2000, 'Query');
@@ -136,9 +152,7 @@ export default class PlayerController extends EventEmitter {
             let resolved;
             if (this.extractor.isPlaylistUrl(part) && !part.includes('open.spotify.com')) {
                 try {
-                    const result = await this.extractor.extractPlaylist(part);
-                    if (!result.tracks.length) throw new Error('Playlist extraction returned no tracks');
-                    resolved = { tracks: result.tracks.map(t => ({ url: t.url, info: { title: t.title, uri: t.url, length: t.duration, author: t.author || 'Unknown' } })), playlistName: result.playlistName };
+                    resolved = await this.extractPlaylist(part);
                 } catch (error) { log.warn('Playlist extractor failed; trying audio engine', error.message); resolved = await this.resolve(node, part); }
             } else resolved = await this.resolve(node, part);
             if (resolved.playlistName) playlistNames.push(resolved.playlistName);
@@ -241,11 +255,12 @@ export default class PlayerController extends EventEmitter {
         player.on('update', data => {
             const state = this.playerStates.get(id);
             if (!state || this.currentTracks.get(id)?.terminal || !data.state) return;
+            const connected = state.connected;
             state.position = data.state.position || 0;
             state.timestamp = Date.now();
             state.connected = data.state.connected !== false;
             if (state.position >= 5000) this.failureStreaks.set(id, 0);
-            this.changed(id);
+            this.changed(id, { positionOnly: connected === state.connected });
         });
         player.on('closed', data => {
             this.invalidate(id);
@@ -293,13 +308,7 @@ export default class PlayerController extends EventEmitter {
                 this.playerStates.set(id, { position: 0, timestamp: Date.now(), duration: track.info.length || 0, paused: false, connected: true });
                 // NodeLink 2.x reads top-level userData after checking track.userData.
                 // Supply both forms; Lavalink uses the nested, standard form.
-                try { await player.playTrack({ track: { encoded: track.encoded, userData: { playbackToken: token } }, userData: { playbackToken: token } }); }
-                catch (error) {
-                    await this.queue.client.lPush('queue:' + id, JSON.stringify(head));
-                    this.currentTracks.delete(id);
-                    this.playerStates.delete(id);
-                    throw error;
-                }
+                await this.playTrackRetainingQueue(player, id, head, track, token);
                 this.changed(id);
                 return;
             } catch (error) {

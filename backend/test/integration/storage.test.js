@@ -17,7 +17,9 @@ test('real PostgreSQL applies migrations twice and preserves data',{skip:!proces
         await db.awardXp(guild,'user',500);await db.awardXp(guild,'user',100);
         assert.equal(Number((await db.rank(guild,'user')).xp),200);
     } finally {
+        // noinspection SqlNoDataSourceInspection,SqlResolve
         await pool.query('DELETE FROM guild_settings WHERE guild_id=$1',[guild]);
+        // noinspection SqlNoDataSourceInspection,SqlResolve
         await pool.query('DELETE FROM guild_users WHERE guild_id=$1',[guild]);
         await db.shutdown();
     }
@@ -29,6 +31,7 @@ test('real Redis queue edits, compare-pop and session persistence',{skip:!proces
     try {
         const tracks=Array.from({length:3},(_,i)=>({encoded:String(i),info:{title:String(i)}}));
         await queue.add(guild,tracks);const head=await queue.peek(guild);
+        assert.deepEqual(await queue.summary(guild),{length:3,head});
         await queue.edit(guild,'move',1,3);assert.equal(await queue.next(guild,head),null);
         assert.equal((await queue.getQueue(guild))[2].id,head.id);
         await queue.edit(guild,'jump',2);assert.equal((await queue.getQueue(guild)).length,2);

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import PlayerController from '../src/services/player.js';
 import { ActionService } from '../src/services/actions.js';
+import { NowPlayingService } from '../src/services/nowplaying.js';
+import { panelText, panelButtons } from './helpers/nowplaying.js';
 const track=(id,encoded=id) => ({id,encoded,info:{title:id,uri:'https://www.youtube.com/watch?v='+id,length:100000,author:'Artist'},requester:{id:'user',username:'User'}});
 function fixture(entries=[],resolver=async q=>({loadType:'track',data:track(q,'resolved:'+q)})) {
     let queue=structuredClone(entries);
@@ -32,6 +34,7 @@ function fixture(entries=[],resolver=async q=>({loadType:'track',data:track(q,'r
             return queue.shift();
         },
         getQueue:async()=>structuredClone(queue),
+        summary:async()=>({length:queue.length,head:structuredClone(queue[0] || null)}),
         add:async (_id,tracks)=> {queue.push(...tracks.map((t,i)=>({...t,id:'added-'+i})));},
         clear:async()=>{queue=[];},
         edit:async (_id,action,from,to)=> {
@@ -49,6 +52,59 @@ function fixture(entries=[],resolver=async q=>({loadType:'track',data:track(q,'r
     const flush=async()=>{await new Promise(resolve=>setImmediate(resolve));await controller.serial.pending.get('guild');await new Promise(resolve=>setImmediate(resolve));};
     return {controller,player,shoukaku,plays,history,storage,event,flush,node,get queue(){return queue;}};
 }
+
+test('compact snapshots preserve normal snapshot contracts and only read the queue summary', async()=>{
+    const f=fixture(Array.from({length:10000},(_,n)=>track(String(n))));
+    const normal=await f.controller.snapshot('guild');
+    assert.equal(normal.queue.length,10000);assert.equal('queueLength' in normal,false);
+    f.storage.getQueue=()=>assert.fail('Panel snapshots must not read the complete queue');
+    const preview=await f.controller.snapshot('guild',{queuePreview:true});
+    assert.equal(preview.queueLength,10000);assert.equal(preview.queue.length,1);
+    assert.equal(preview.queue[0].id,'0');
+});
+
+test('real player integration preserves history across controls, skip, natural end and stop',async()=>{
+    const f=fixture([track('a'),track('b'),track('c')]);
+    const sent=[],edits=[];
+    const channel={send:async payload=>{sent.push(payload);return {id:String(sent.length),channel};},
+        messages:{edit:async(id,payload)=>{edits.push({id,payload});}}};
+    const access={check:async()=>({channelId:'voice'})};
+    const service=new NowPlayingService({channels:{fetch:async()=>channel}},f.controller,access,{schedule:()=>1,cancel:()=>{}});
+    const actions=new ActionService(f.controller,{},access);
+    const settle=async()=>{await f.flush();await Promise.all([...service.jobs.values()]);await f.flush();};
+    const invoke=async(action,token=f.controller.getCurrentTrack('guild')?.playbackToken,messageId=service.sessions.get('guild')?.card.message.id)=>{
+        let error;
+        await service.handleButton({guildId:'guild',user:{id:'user'},message:{id:messageId},customId:`np:${token}:${action}`,
+            deferReply:async()=>{},deleteReply:async()=>{},editReply:async payload=>{error=payload.content;}},()=>true);
+        await settle();return error;
+    };
+    try {
+        await f.controller.playNext('guild');
+        f.controller.emit('sessionAccepted',{guildId:'guild',channelId:'origin'});await settle();
+        assert.equal(sent.length,1);
+        const firstToken=f.controller.getCurrentTrack('guild').playbackToken;
+        f.storage.getQueue=()=>assert.fail('NowPlaying must not read full queue');
+        await invoke('toggle');assert.match(panelText(edits.at(-1).payload),/Pausado/);
+        await invoke('toggle');assert.match(panelText(edits.at(-1).payload),/Tocando/);
+        await invoke('down');assert.match(panelText(edits.at(-1).payload),/90%/);
+        await invoke('up');assert.match(panelText(edits.at(-1).payload),/100%/);
+        await actions.execute('guild',{id:'user'},'filter',{preset:'nightcore'});await settle();
+        assert.match(panelText(edits.at(-1).payload),/Nightcore/);
+        await invoke('skip');assert.equal(sent.length,2);
+        assert.ok(edits.some(edit=>edit.id==='1' && panelButtons(edit.payload).every(button=>button.disabled)));
+        assert.match(await invoke('skip',firstToken,'1'),/expirou/);
+        const changes=[];f.controller.on('change',(id,details)=>changes.push(details));
+        f.player.emit('update',{state:{position:100000,connected:true}});await settle();
+        assert.equal(changes.at(-1).positionOnly,true);
+        f.player.emit('end',f.event(f.controller.getCurrentTrack('guild')));await settle();
+        assert.equal(sent.length,3);
+        assert.ok(edits.some(edit=>edit.id==='2' && panelButtons(edit.payload).every(button=>button.disabled)));
+        await invoke('stop');assert.equal(service.sessions.size,0);
+        assert.ok(panelButtons(edits.at(-1).payload).every(button=>button.disabled));
+        assert.match(panelText(edits.at(-1).payload),/Sessão encerrada/);
+        assert.deepEqual(sent.map(payload=>panelText(payload).match(/\*\*\[([abc])]/)[1]),['a','b','c']);
+    } finally {await service.close();}
+});
 test('card controls reject old tokens inside the lock, including identical consecutive songs',async()=>{
     const f=fixture([track('a','same'),track('b','same'),track('c')]);
     await f.controller.playNext('guild');
@@ -204,4 +260,17 @@ test('livestream terminal events are excluded from early-ending diagnostics',asy
     const f=fixture([{...track('live'),info:{...track('live').info,isStream:true}}]);await f.controller.playNext('guild');
     f.player.emit('end',f.event(f.controller.getCurrentTrack('guild')));await f.flush();
     assert.equal(f.controller.diagnostics.earlyEndings,0);
+});
+
+
+test('empty and failed playlist extraction fall back to the audio engine',async()=>{
+    for (const extraction of [async()=>({tracks:[]}),async()=>{throw new Error('Extractor unavailable');}]) {
+        const queries=[];
+        const f=fixture([],async query=>{queries.push(query);return {loadType:'track',data:track('fallback')};});
+        f.controller.extractor={isPlaylistUrl:()=>true,extractPlaylist:extraction};
+        const result=await f.controller.enqueue('guild','voice',{id:'user',username:'User'},'https://example.com/playlist','text');
+        assert.equal(result.count,1);
+        assert.deepEqual(queries,['https://example.com/playlist']);
+        assert.equal(f.plays[0].track.encoded,'fallback');
+    }
 });

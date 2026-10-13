@@ -88,8 +88,8 @@ test('queue and playlists paginate and preserve positions and footer with long m
         await command(name).execute(i, { access, ...context });
         assert.ok(i.response.content.length <= 1900);
         assert.match(i.response.content, /Page 2\/3/);
-        assert.match(i.response.content, /(?:11\.|ID 11:)/);
-        assert.match(i.response.content, /(?:20\.|ID 20:)/);
+        assert.match(i.response.content, /11\.|ID 11:/);
+        assert.match(i.response.content, /20\.|ID 20:/);
         assert.ok(i.response.content.includes('\\*Long\\*'));
         assert.deepEqual(i.response.allowedMentions, { parse: [] });
         const last = interaction({ ...values, page: 999 });
@@ -165,4 +165,28 @@ test('handler reports command validation failure instead of success', async () =
     } } });
     assert.equal(i.response.content, 'Denied');
     assert.deepEqual(i.response.allowedMentions, { parse: [] });
+});
+
+test('handler reports failures after a V2 reply through an ephemeral follow-up', async () => {
+    let edited=false,followed;
+    const handler=new CommandHandler([{data:{name:'v2'},execute:async i=>{
+        i.replied=true;i.nowPlayingV2=true;throw new Error('Failure after publish');
+    }}]);
+    await handler.handleInteraction({guildId:'guild',commandName:'v2',isChatInputCommand:()=>true,deferred:true,
+        editReply:async()=>{edited=true;},followUp:async payload=>{followed=payload;}},{ready:()=>true});
+    assert.equal(edited,false);assert.equal(followed.flags,64);
+    assert.match(followed.content,/Command failed/);
+});
+
+
+test('handler reports missing commands and unavailable dependencies without execution',async()=>{
+    for (const [name,ready,message] of [['missing',true,/unavailable in this build/],['play',false,/dependencies are starting/]]) {
+        let executed=false;let response;
+        const i={guildId:'guild',commandName:name,isChatInputCommand:()=>true,reply:async payload=>{response=payload;}};
+        await new CommandHandler().handleInteraction(i,{ready:()=>ready,actions:{execute:async()=>{executed=true;}}});
+        assert.equal(executed,false);
+        assert.match(response.content,message);
+        assert.equal(response.flags,64);
+        assert.deepEqual(response.allowedMentions,{parse:[]});
+    }
 });

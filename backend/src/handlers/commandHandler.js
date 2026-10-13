@@ -1,4 +1,5 @@
 import { commands } from '../commands/registry.js';
+import { Routes, MessageFlags } from 'discord.js';
 
 // Compare public definitions, ignoring Discord IDs, version numbers and absent defaults.
 const definition = command => ({ name:command.name,description:command.description,
@@ -33,6 +34,21 @@ export class CommandHandler {
         }
         return names;
     }
+    async registerApplication(rest,clientId,guildId,onVerified = () => {}) {
+        const names = await this.register(rest,Routes.applicationCommands(clientId));
+        onVerified('global',names);
+        if (guildId) {
+            const guildNames = await this.register(rest,Routes.applicationGuildCommands(clientId,guildId));
+            onVerified('guild:' + guildId,guildNames);
+        }
+        return names;
+    }
+    async executeCommand(interaction,context) {
+        const command = this.commands.get(interaction.commandName);
+        if (!command) throw Object.assign(new Error('Command is unavailable in this build.'),{status:404});
+        if (!context.ready()) throw Object.assign(new Error('Bot dependencies are starting or unavailable. Please retry.'),{status:503});
+        await command.execute(interaction,context);
+    }
     async handleInteraction(interaction,context) {
         if (interaction.isButton?.() && context.nowPlaying) {
             await context.nowPlaying.handleButton(interaction,context.ready).catch(error => console.error('[NowPlaying]',error.message));
@@ -40,15 +56,14 @@ export class CommandHandler {
         }
         if (!interaction.isChatInputCommand()) return;
         if (!interaction.guildId) return interaction.reply({content:'Use commands in a server.',flags:64});
-        const command = this.commands.get(interaction.commandName);
         try {
-            if (!command) throw Object.assign(new Error('Command is unavailable in this build.'),{status:404});
-            if (!context.ready()) throw Object.assign(new Error('Bot dependencies are starting or unavailable. Please retry.'),{status:503});
-            await command.execute(interaction,context);
+            await this.executeCommand(interaction,context);
         } catch(error) {
             console.error('[Command]',interaction.commandName,error.message);
             const response = {content:error.status ? error.message : 'Command failed. Check the backend logs.',allowedMentions:{parse:[]}};
-            if (interaction.deferred) await interaction.editReply(response).catch(() => {});
+            if (interaction.replied && (interaction.message?.flags?.has(MessageFlags.IsComponentsV2) || interaction.nowPlayingV2))
+                await interaction.followUp({...response,flags:MessageFlags.Ephemeral}).catch(() => {});
+            else if (interaction.deferred) await interaction.editReply(response).catch(() => {});
             else if (interaction.replied) await interaction.followUp({...response,flags:64}).catch(() => {});
             else await interaction.reply({...response,flags:64}).catch(() => {});
         }

@@ -49,7 +49,10 @@ export const musicCommands = [
     { data:make('nowplaying','Show the current song and actual playback position.'), async execute(i,{access,playerController,nowPlaying}) {
         await i.deferReply(); await access.check(i.guildId,i.user.id);
         if (nowPlaying) await nowPlaying.show(i);
-        else await i.editReply(nowPlayingReply(await playerController.snapshot(i.guildId)));
+        else {
+            await i.editReply(nowPlayingReply(await playerController.snapshot(i.guildId,{queuePreview:true})));
+            i.nowPlayingV2 = true;
+        }
     }},
     { data:int(make('history','Show recent server playback history.'),'count','Number of tracks',1,25,false), async execute(i,{access,database}) {
         await i.deferReply(); await access.check(i.guildId,i.user.id);

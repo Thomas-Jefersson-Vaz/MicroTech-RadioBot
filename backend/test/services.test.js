@@ -31,6 +31,40 @@ test('registration is verified and errors do not report success',async()=>{
     const incomplete=commands.map(c=>c.data.toJSON());incomplete.find(c=>c.name === 'playlist').options=[];
     await assert.rejects(handler.register({put:async()=>{},get:async()=>incomplete},'/route'),/definition does not match/);
 });
+test('application registration always publishes globally and optionally synchronizes a guild',async()=>{
+    const handler=new CommandHandler();
+    const expected=commands.map(command=>command.data.toJSON());
+    for (const guildId of [undefined,'guild']) {
+        const calls=[];const verified=[];
+        const rest={put:async(route,{body})=>{calls.push(['put',route]);assert.deepEqual(body,expected);},
+            get:async route=>{calls.push(['get',route]);return expected;}};
+        const names=await handler.registerApplication(rest,'app',guildId,(scope)=>verified.push(scope));
+        const global='/applications/app/commands';const guild='/applications/app/guilds/guild/commands';
+        assert.deepEqual(calls,guildId ? [['put',global],['get',global],['put',guild],['get',guild]] : [['put',global],['get',global]]);
+        assert.deepEqual(verified,guildId ? ['global','guild:guild'] : ['global']);
+        assert.deepEqual(names,expected.map(command=>command.name).sort());
+    }
+});
+
+test('application registration propagates failures and verifies each scope',async()=>{
+    const handler=new CommandHandler();const expected=commands.map(command=>command.data.toJSON());
+    for (const failingScope of ['global','guild']) {
+        for (const failure of ['publication','names','definition']) {
+            const verified=[];
+            const fails=route=>route.includes('/guilds/') === (failingScope === 'guild');
+            const rest={put:async route=>{if(fails(route) && failure === 'publication')throw new Error('Discord unavailable');},
+                get:async route=>{
+                    if(!fails(route))return expected;
+                    if(failure === 'names')return [];
+                    const live=structuredClone(expected);live[0].description='Wrong definition';return live;
+                }};
+            await assert.rejects(handler.registerApplication(rest,'app','guild',scope=>verified.push(scope)),
+                failure === 'publication' ? /Discord unavailable/ : /does not match/);
+            assert.deepEqual(verified,failingScope === 'global' ? [] : ['global']);
+        }
+    }
+});
+
 test('AI rejects non-allowlisted actions before executing anything',()=>{
     assert.throws(()=>parseAnswer('{"reply":"ok","action":{"name":"shell","args":{}}}'),/unsupported/);
 });

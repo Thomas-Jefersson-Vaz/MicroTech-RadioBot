@@ -23,6 +23,11 @@ export class QueueService {
     }
     async peek(guildId) { const item = await this.client.lIndex('queue:' + guildId, 0); return item ? JSON.parse(item) : null; }
     async getQueue(guildId) { return (await this.client.lRange('queue:' + guildId, 0, -1)).map(JSON.parse); }
+    async summary(guildId) {
+        const key = 'queue:' + guildId;
+        const [length, head] = await this.client.multi().lLen(key).lIndex(key, 0).exec();
+        return { length, head: head ? JSON.parse(head) : null };
+    }
     async clear(guildId) { await this.client.del('queue:' + guildId); }
     async edit(guildId, action, from, to) {
         // Lua operates on the list in place; no read/delete/reinsert race.
